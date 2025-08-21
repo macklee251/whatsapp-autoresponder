@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 from flask import Flask, request, jsonify
 import requests
 
-from ai_provider import generate_reply  # já usamos antes
+from ai_provider import generate_reply_with_fallback as generate_reply
 
 app = Flask(__name__)
 

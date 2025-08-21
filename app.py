@@ -1,367 +1,272 @@
 # app.py
 import os
 import re
-import time
 import json
-import sqlite3
+import time
+import random
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
 
 import requests
-import smtplib
-from email.mime.text import MIMEText
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-# ----------------- ENV & LOG -----------------
-load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
+# ===== env =====
+BASE_DIR = Path(__file__).resolve().parent
+load_dotenv(BASE_DIR / ".env", override=True)
 
-API_URL           = os.getenv("API_URL", "https://api.ultramsg.com")
-ULTRA_INSTANCE_ID = os.getenv("ULTRA_INSTANCE_ID") or os.getenv("INSTANCE_ID")
-ULTRAMSG_TOKEN    = os.getenv("ULTRAMSG_TOKEN") or os.getenv("ULTRA_TOKEN")
-MY_WA_NUMBER      = (os.getenv("MY_WA_NUMBER") or "").lstrip("+")
+API_URL            = os.getenv("API_URL", "https://api.ultramsg.com")
+ULTRA_INSTANCE_ID  = os.getenv("ULTRA_INSTANCE_ID") or os.getenv("INSTANCE_ID")
+ULTRAMSG_TOKEN     = os.getenv("ULTRAMSG_TOKEN") or os.getenv("ULTRA_TOKEN")
 
 SMTP_SERVER = os.getenv("SMTP_SERVER")
 SMTP_PORT   = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER   = os.getenv("SMTP_USER")
 SMTP_PASS   = os.getenv("SMTP_PASS")
-ALERT_EMAIL = os.getenv("ALERT_EMAIL")
+ALERT_EMAIL = os.getenv("ALERT_EMAIL", "mlee251@icloud.com")
 
-# IA
-from ai_provider import generate_reply
+# IA (openrouter) é carregada no ai_provider.py
+from ai_provider import generate_reply  # usa pool/fallback que você já configurou
 
-logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
-log = logging.getLogger("app")
+# ===== flask =====
 app = Flask(__name__)
+logging.basicConfig(level=logging.INFO)
+log = logging.getLogger("app")
 
-# ----------------- DB (pausas + slots) -----------------
-DB_PATH = Path("state.db")
+# ===== memória simples de sessão por cliente =====
+SESS = {}  # phone -> dict
+SILENCE = {}  # phone -> datetime until
 
-def get_db():
-    con = sqlite3.connect(DB_PATH)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS pauses (
-            chat_id TEXT PRIMARY KEY,
-            until_ts INTEGER NOT NULL
-        );
-    """)
-    con.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            chat_id TEXT PRIMARY KEY,
-            local TEXT,
-            horario TEXT,
-            pagamento TEXT,
-            status TEXT,          -- 'collecting' | 'booked'
-            last_update INTEGER
-        );
-    """)
-    con.commit()
-    return con
+SILENCE_HOURS = 12
 
-def set_pause(chat_id: str, hours: int = 12):
-    until = int(time.time() + hours * 3600)
-    con = get_db()
-    con.execute("INSERT INTO pauses(chat_id, until_ts) VALUES(?, ?) "
-                "ON CONFLICT(chat_id) DO UPDATE SET until_ts=excluded.until_ts",
-                (chat_id, until))
-    con.commit(); con.close()
-    log.info("[PAUSE] %s até %s", chat_id, time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(until)))
+# ===== util =====
+def normalize_wa(jid: str) -> str:
+    # "5562...@c.us" -> "+5562..."
+    if not jid:
+        return ""
+    num = jid.split("@")[0]
+    if not num.startswith("+"):
+        num = "+" + num
+    return num
 
-def is_paused(chat_id: str) -> bool:
-    try:
-        con = get_db()
-        row = con.execute("SELECT until_ts FROM pauses WHERE chat_id=?", (chat_id,)).fetchone()
-        con.close()
-        return bool(row and int(row[0]) > int(time.time()))
-    except Exception as e:
-        log.warning("pause-check error: %s", e)
+def silent_until(phone: str) -> bool:
+    until = SILENCE.get(phone)
+    if not until:
         return False
+    return datetime.utcnow() < until
 
-def get_session(chat_id: str) -> Dict[str, Any]:
-    con = get_db()
-    row = con.execute("SELECT local, horario, pagamento, status, last_update FROM sessions WHERE chat_id=?",
-                      (chat_id,)).fetchone()
-    con.close()
-    if not row:
-        return {"local": None, "horario": None, "pagamento": None, "status": "collecting", "last_update": 0}
-    return {"local": row[0], "horario": row[1], "pagamento": row[2], "status": row[3], "last_update": row[4]}
+def set_silence(phone: str, hours=SILENCE_HOURS):
+    SILENCE[phone] = datetime.utcnow() + timedelta(hours=hours)
 
-def save_session(chat_id: str, sess: Dict[str, Any]):
-    con = get_db()
-    con.execute("""
-        INSERT INTO sessions(chat_id, local, horario, pagamento, status, last_update)
-        VALUES(?,?,?,?,?,?)
-        ON CONFLICT(chat_id) DO UPDATE SET
-          local=excluded.local, horario=excluded.horario,
-          pagamento=excluded.pagamento, status=excluded.status,
-          last_update=excluded.last_update
-    """, (chat_id, sess.get("local"), sess.get("horario"), sess.get("pagamento"),
-          sess.get("status"), int(time.time())))
-    con.commit(); con.close()
+def strip_emojis(txt: str, allow=0) -> str:
+    # remove a maioria dos emojis; permite alguns se quiser
+    # aqui vamos deixar quase sem
+    return re.sub(r"[\U00010000-\U0010ffff]", "", txt)
 
-# ----------------- EMAIL -----------------
-def send_email(subject: str, body: str, to_addr: Optional[str] = None) -> bool:
-    to_addr = to_addr or ALERT_EMAIL
-    if not (SMTP_SERVER and SMTP_USER and SMTP_PASS and to_addr):
-        log.warning("[EMAIL] SMTP incompleto ou destino ausente; skip.")
-        return False
-    try:
-        msg = MIMEText(body, "plain", "utf-8")
-        msg["Subject"] = subject
-        msg["From"] = SMTP_USER
-        msg["To"] = to_addr
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.sendmail(SMTP_USER, [to_addr], msg.as_string())
-        log.info("[EMAIL] enviado para %s", to_addr)
-        return True
-    except Exception as e:
-        log.error("[EMAIL] falhou: %s", e)
-        return False
-
-# ----------------- ULTRAMSG -----------------
-def normalize_jid(s: Optional[str]) -> str:
-    if not s: return ""
-    return s.split("@")[0].replace(" ", "").lstrip("+")
-
-def ultra_send(to_number_e164: str, text: str) -> bool:
+# ===== UltraMsg =====
+def ultra_send_text(to_number: str, text: str) -> bool:
+    """
+    Envia mensagem pelo UltraMsg.
+    OBS: token deve ir na query string (?token=...), NÃO no corpo.
+    """
     if not (ULTRA_INSTANCE_ID and ULTRAMSG_TOKEN):
         log.error("[ULTRA] credenciais ausentes")
         return False
+
     url = f"{API_URL}/{ULTRA_INSTANCE_ID}/messages/chat"
     params = {"token": ULTRAMSG_TOKEN}
-    data = {"to": to_number_e164, "body": text}
+    data = {"to": to_number.replace("+",""), "body": text}
+
     try:
-        preview = text if len(text) < 120 else text[:120] + "…"
-        log.info("[ULTRA] POST %s?token=*** data=%s", url, {"to": to_number_e164, "body": preview})
         r = requests.post(url, params=params, data=data, timeout=20)
+        log.info("[ULTRA] URL: %s?token=***", url)
+        ok = (r.status_code == 200)
+        body = {}
         try:
-            j = r.json()
+            body = r.json()
         except Exception:
-            j = {"raw": r.text}
-        log.info("[ULTRA] resp %s %s", r.status_code, j)
-        return r.ok and not j.get("error")
+            body = {"_raw": r.text}
+        log.info("[ULTRA] resp: %s %s", r.status_code, body)
+        return ok and not body.get("error")
     except Exception as e:
-        log.error("[ULTRA] erro envio: %s", e)
+        log.exception("[ULTRA] erro ao enviar: %s", e)
         return False
 
-# ----------------- ESTILO (menos emojis) -----------------
-EMOJI_REGEX = re.compile(
-    "["                                # faixa ampla de emojis
-    "\U0001F1E0-\U0001F1FF"            # flags
-    "\U0001F300-\U0001F5FF"
-    "\U0001F600-\U0001F64F"
-    "\U0001F680-\U0001F6FF"
-    "\U0001F700-\U0001F77F"
-    "\U0001F780-\U0001F7FF"
-    "\U0001F800-\U0001F8FF"
-    "\U0001F900-\U0001F9FF"
-    "\U0001FA00-\U0001FA6F"
-    "\U0001FA70-\U0001FAFF"
-    "\u2600-\u26FF"
-    "\u2700-\u27BF"
-    "]+"
-)
+# ===== email (SMTP) =====
+def send_email_alert(subject: str, body: str) -> bool:
+    """envia e‑mail simples via SMTP; ignora se SMTP_* faltando"""
+    if not (SMTP_SERVER and SMTP_USER and SMTP_PASS and ALERT_EMAIL):
+        log.warning("[EMAIL] SMTP não configurado; skip.")
+        return False
+    import smtplib
+    from email.mime.text import MIMEText
+    msg = MIMEText(body, _charset="utf-8")
+    msg["Subject"] = subject
+    msg["From"] = SMTP_USER
+    msg["To"] = ALERT_EMAIL
+    try:
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15) as s:
+            s.starttls()
+            s.login(SMTP_USER, SMTP_PASS)
+            s.sendmail(SMTP_USER, [ALERT_EMAIL], msg.as_string())
+        log.info("[EMAIL] enviado para %s", ALERT_EMAIL)
+        return True
+    except Exception as e:
+        log.exception("[EMAIL] erro: %s", e)
+        return False
 
-def strip_emojis(text: str, allow: int = 0) -> str:
-    """Remove emojis; se allow>0, mantém até N (primeiros) emojis."""
-    if allow <= 0:
-        return EMOJI_REGEX.sub("", text)
-    # mantém os primeiros N, remove o resto
-    kept = 0
-    out = []
-    for ch in text:
-        if EMOJI_REGEX.match(ch):
-            if kept < allow:
-                out.append(ch); kept += 1
-            # senão, descarta
+# ===== extração de intenção e slots =====
+RE_LOCAL  = re.compile(r"\b(villa\s*rosa|meu\s*local|motel|ap[êe]|apartamento|ape|no\s*meu\s*ap[êe])\b", re.I)
+RE_HORA   = re.compile(r"\b(\d{1,2})h\b|\b(\d{1,2}:\d{2})\b|\b(hoje|amanh[aã])\b", re.I)
+RE_PAGTO  = re.compile(r"\b(pix|dinheiro|cart[aã]o)\b", re.I)
+
+def extract_slot_local(text: str) -> str | None:
+    m = RE_LOCAL.search(text or "")
+    if not m: return None
+    v = m.group(0).lower()
+    if "motel" in v:
+        return "motel"
+    if "ap" in v or "apart" in v:
+        return "cliente"
+    if "villa" in v or "meu local" in v:
+        return "meu_local"
+    return v
+
+def extract_slot_hora(text: str) -> str | None:
+    t = text or ""
+    m = RE_HORA.search(t)
+    if not m: return None
+    g = [x for x in m.groups() if x]
+    return g[0] if g else None
+
+def extract_slot_pagto(text: str) -> str | None:
+    m = RE_PAGTO.search(text or "")
+    return m.group(0).lower() if m else None
+
+def looks_like_media(body: dict) -> bool:
+    t = (body or {}).get("type","")
+    return t in {"image","video","ptt","audio","document","ptv","sticker","location","vcard"}
+
+def polite_media_reply() -> str:
+    return "amor, n consigo ouvir áudio nem abrir mídia por aqui… me manda por texto? 💕"
+
+# ===== webhook =====
+@app.route("/ultra-webhook", methods=["POST"])
+def ultra_webhook():
+    payload = request.get_json(silent=True) or {}
+    log.info("[INBOUND] %s", json.dumps(payload, ensure_ascii=False))
+
+    data = payload.get("data") or {}
+    from_jid = data.get("from", "")
+    to_jid   = data.get("to", "")
+    body_txt = data.get("body", "") or ""
+    msg_type = data.get("type", "chat")
+    from_me  = bool(data.get("fromMe"))
+
+    client_number = normalize_wa(from_jid)
+    modelo_number = normalize_wa(to_jid)
+
+    # se a modelo respondeu manualmente -> silenciar 12h
+    if from_me:
+        if client_number:
+            set_silence(client_number, SILENCE_HOURS)
+        return jsonify({"ok": True})
+
+    # filtra mídia (educado)
+    if msg_type != "chat" or looks_like_media(data):
+        reply = polite_media_reply()
+        ultra_send_text(client_number, reply)
+        return jsonify({"ok": True})
+
+    # se está silenciado (já fechou ou modelo respondeu)
+    if silent_until(client_number):
+        log.info("[SILENT] %s ainda em janela de silêncio", client_number)
+        return jsonify({"ok": True})
+
+    # === 1) sempre pede resposta da IA primeiro (naturalidade) ===
+    try:
+        ai_reply = generate_reply(
+            user_text=body_txt,
+            system_persona=os.getenv("DEFAULT_PERSONA", "Você é Gabriele..."),
+            # opcional: passar histórico básico desta sessão (mantemos curto)
+            history=SESS.get(client_number, {}).get("history", [])[-6:],
+        )
+    except Exception as e:
+        log.exception("[AI] falhou; usando fallback simples: %s", e)
+        ai_reply = "oii :) me fala se vc prefere no meu local (R$ 300), motel ou no seu apê (R$ 500), e o horário…"
+
+    # limita/ajusta estilo: menos emoji e sem formalidade excessiva
+    ai_reply = strip_emojis(ai_reply, allow=0)
+    ai_reply = re.sub(r"\s{3,}", "  ", ai_reply).strip()
+    ai_reply = ai_reply[:4096]
+
+    # guarda um mini-histórico pra IA “lembrar” um pouco
+    h = SESS.setdefault(client_number, {}).setdefault("history", [])
+    h.append({"role":"user","content":body_txt})
+    h.append({"role":"assistant","content":ai_reply})
+    h[:] = h[-10:]  # janela curta
+
+    # === 2) tenta identificar agendamento (no texto DO CLIENTE) ===
+    loc = extract_slot_local(body_txt)
+    hr  = extract_slot_hora(body_txt)
+    pg  = extract_slot_pagto(body_txt)
+
+    if loc and hr and pg:
+        # formata valores/custos
+        if loc == "meu_local":
+            preco = 300
+            local_txt = "no meu local (Villa Rosa)"
+        elif loc == "motel":
+            preco = 500
+            local_txt = "em motel"
         else:
-            out.append(ch)
-    return "".join(out)
+            preco = 500
+            local_txt = "no seu apê"
 
-# ----------------- INTENT & SLOTS -----------------
-# locais aceitos
-RE_LOCAL  = re.compile(r"\b(villa\s*rosa|motel|apto|apartamento|no\s*meu\s*ap[êe]|no\s*seu\s*ap[êe])\b", re.I)
-# horários
-RE_HORA   = re.compile(r"\b(\d{1,2}h|\d{1,2}:\d{2}|manh[ãa]|tarde|noite|agora|hoje|amanh[ãa])\b", re.I)
-# pagamento
-RE_PAGTO  = re.compile(r"\b(pix|cart[aã]o|dinheiro|cr[eé]dito|d[eé]bito)\b", re.I)
-# intenção de marcar (não vamos mais pedir confirmação explícita)
-RE_MARK   = re.compile(r"\b(quero marcar|vamos marcar|fechar|agendar|marcar)\b", re.I)
+        # manda e‑mail para a modelo
+        assunto = "🛎️ Novo agendamento (bot)"
+        corpo = (
+            f"Cliente: {client_number}\n"
+            f"Local: {local_txt}\n"
+            f"Horário: {hr}\n"
+            f"Pagamento: {pg}\n"
+            f"Valor estimado: R$ {preco}\n"
+        )
+        send_email_alert(assunto, corpo)
 
-def extract_slot_local(text: str) -> Optional[str]:
-    m = RE_LOCAL.search(text)
-    if not m: return None
-    val = m.group(1).lower()
-    if "villa" in val:  return "meu local (Villa Rosa)"
-    if "motel" in val:  return "motel"
-    if "apto" in val or "apart" in val or "seu ap" in val: return "seu apartamento"
-    if "meu ap" in val: return "meu local (Villa Rosa)"
-    return val
+        # responde curto e silencia 12h (modelo assume a conversa)
+        confirm_txt = "fechadinho 💋 te espero então; qualquer coisa a gente fala lá. (a modelo assume daqui)"
+        ultra_send_text(client_number, confirm_txt)
+        set_silence(client_number, SILENCE_HOURS)
+        log.info("[CLOSED] %s agendado -> silêncio por 12h", client_number)
+        return jsonify({"ok": True})
 
-def extract_slot_hora(text: str) -> Optional[str]:
-    m = RE_HORA.search(text)
-    if not m: return None
-    return m.group(1)
+    # === 3) se não fechou, envia a resposta da IA ===
+    ultra_send_text(client_number, ai_reply)
+    return jsonify({"ok": True})
 
-def extract_slot_pagto(text: str) -> Optional[str]:
-    m = RE_PAGTO.search(text)
-    if not m: return None
-    g = m.group(1).lower()
-    if "pix" in g: return "pix"
-    if "cart" in g: return "cartão"
-    if "din" in g: return "dinheiro"
-    if "cr" in g:  return "cartão"
-    if "d" in g:   return "cartão"
-    return g
-
-def in_booking_flow(text: str, sess: Dict[str, Any]) -> bool:
-    t = (text or "").lower()
-    if sess.get("status") in ("collecting", "booked"):
-        return True
-    if RE_MARK.search(t):  # intenção explícita
-        return True
-    hits = sum([1 if RE_LOCAL.search(t) else 0,
-                1 if RE_HORA.search(t) else 0,
-                1 if RE_PAGTO.search(t) else 0])
-    return hits >= 2  # sinais fortes
-
-def next_missing(sess: Dict[str, Any]) -> Optional[str]:
-    if not sess.get("local"):    return "local"
-    if not sess.get("horario"):  return "horário"
-    if not sess.get("pagamento"):return "pagamento"
-    return None
-
-def price_for_local(local: str) -> str:
-    # Gabriele: 300 no próprio local (Villa Rosa), 500 em motel/apto
-    if "meu local" in (local or ""): return "R$ 300"
-    return "R$ 500"
-
-def make_handoff_message(sess: Dict[str, Any]) -> str:
-    """Mensagem curtinha (sem emojis) ao concluir slots, sem pedir confirmação."""
-    local = sess.get("local")
-    horario = sess.get("horario")
-    pagto = sess.get("pagamento")
-    valor = price_for_local(local or "")
-    # tom simples, coloquial, sem formalidade
-    return f"Anotei aqui: {local}, {horario}, {pagto}. Fica {valor}. Te confirmo já por aqui."
-
-# ----------------- HEALTH -----------------
-@app.get("/health")
+# ===== health =====
+@app.route("/health")
 def health():
-    smtp_ok = bool(SMTP_USER and SMTP_PASS)
+    miss = []
+    for k in ("ULTRA_INSTANCE_ID","ULTRAMSG_TOKEN"):
+        if not globals().get(k):
+            miss.append(k)
+    smtp_ok = bool(SMTP_SERVER and SMTP_USER and SMTP_PASS)
+    ai_info = {"ai_provider": os.getenv("AI_PROVIDER","openrouter"),
+               "ai_model": os.getenv("AI_MODEL","(pool)")}
     return jsonify({
+        **ai_info,
         "ultra_instance": ULTRA_INSTANCE_ID,
         "smtp_ready": smtp_ok,
-        "smtp_missing": [k for k,v in {"SMTP_USER":SMTP_USER,"SMTP_PASS":SMTP_PASS}.items() if not v],
+        "smtp_missing": [] if smtp_ok else ["SMTP_SERVER","SMTP_USER","SMTP_PASS"],
+        "env_missing": miss
     })
 
-# ----------------- WEBHOOK -----------------
-def extract_messages(payload: Any) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
-    def one(ev: Dict[str, Any]):
-        msg = ev.get("data") or ev
-        out.append({
-            "from": msg.get("from") or msg.get("sender") or msg.get("author") or "",
-            "to":   msg.get("to")   or msg.get("chatId") or msg.get("receiver") or "",
-            "type": (msg.get("type") or "").lower(),
-            "body": (msg.get("body") or (msg.get("text") or {}).get("body") or "").strip(),
-            "fromMe": bool(msg.get("fromMe") or msg.get("self") or False),
-        })
-    if isinstance(payload, list):
-        for ev in payload:
-            if isinstance(ev, dict): one(ev)
-    elif isinstance(payload, dict):
-        one(payload)
-    return out
-
-@app.post("/ultra-webhook")
-def ultra_webhook():
-    payload = request.get_json(silent=True) or request.form.to_dict() or {}
-    msgs = extract_messages(payload)
-
-    for m in msgs:
-        wa_from = normalize_jid(m["from"])
-        wa_to   = normalize_jid(m["to"])
-        mtype   = m["type"]
-        body    = m["body"]
-        from_me = m["fromMe"]
-
-        client_number   = wa_from
-        provider_number = wa_to
-        chat_id = client_number  # um chat por cliente
-
-        log.info("[INBOUND] prov:%s <- cli:%s | %r (type=%s, fromMe=%s)", provider_number, client_number, body, mtype, from_me)
-
-        # a modelo respondeu manualmente? pausar 12h
-        if from_me or (MY_WA_NUMBER and wa_from == MY_WA_NUMBER):
-            set_pause(chat_id, 12)
-            continue
-
-        # pausado? então ignorar
-        if is_paused(chat_id):
-            log.info("[PAUSED] %s; ignorando.", chat_id)
-            continue
-
-        # apenas texto por enquanto
-        if mtype != "chat" or not body:
-            continue
-
-        # --------- Fluxo de agendamento (slots, sem confirmação) ---------
-        sess = get_session(chat_id)
-        if in_booking_flow(body, sess):
-            loc = extract_slot_local(body)
-            hr  = extract_slot_hora(body)
-            pg  = extract_slot_pagto(body)
-
-            if loc: sess["local"] = loc
-            if hr:  sess["horario"] = hr
-            if pg:  sess["pagamento"] = pg
-
-            missing = next_missing(sess)
-
-            if missing:
-                sess["status"] = "collecting"
-                save_session(chat_id, sess)
-                # perguntas diretas, poucas palavras, sem emojis
-                if missing == "local":
-                    ultra_send(client_number, "Prefere no meu local no Villa Rosa (R$ 300), em motel ou no seu apê (R$ 500)?")
-                elif missing == "horário":
-                    ultra_send(client_number, "Qual horário fica melhor pra você? (tipo 20h, noite, amanhã à tarde)")
-                else:  # pagamento
-                    ultra_send(client_number, "Pagamento você prefere pix, cartão ou dinheiro?")
-                continue
-
-            # tem os 3 slots → envia e-mail e pausa 12h, sem pedir confirmação
-            sess["status"] = "booked"
-            save_session(chat_id, sess)
-
-            resumo = f"Local: {sess['local']}\nHorário: {sess['horario']}\nPagamento: {sess['pagamento']}\nCliente: +{client_number}"
-            send_email("Novo agendamento — Gabriele", resumo, ALERT_EMAIL)
-
-            handoff = make_handoff_message(sess)
-            handoff = strip_emojis(handoff, allow=0)
-            ultra_send(client_number, handoff)
-            set_pause(chat_id, 12)
-            continue
-
-        # --------- Conversa normal (IA), estilo mais simples ---------
-        try:
-            reply = generate_reply(body)
-        except Exception as e:
-            log.error("[AI] erro: %s", e)
-            reply = "Me fala o bairro, um horário que te sirva e como prefere pagar (pix, cartão ou dinheiro)."
-
-        # corta emojis (0 permitido) e deixa tom mais direto
-        reply = strip_emojis(reply, allow=0).strip()
-        ultra_send(client_number, reply[:4096])
-
-    return jsonify({"status":"ok"}), 200
-
-# ----------------- MAIN -----------------
+# ===== main =====
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
-    log.info("servindo na porta %s", port)
-    app.run(host="0.0.0.0", port=port)
+    # dev-mode: roda o flask direto; em produção use gunicorn
+    log.info("UltraMsg Instance: %s", ULTRA_INSTANCE_ID)
+    log.info("SMTP USER: %s", SMTP_USER)
+    app.run(host="0.0.0.0", port=8000)

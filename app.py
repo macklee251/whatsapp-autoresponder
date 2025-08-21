@@ -1,107 +1,163 @@
+# app.py
 import os
-import time
-import random
 import logging
-import requests
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Union
+
+import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 
-# ==== CONFIGURAÇÃO BÁSICA ====
+# ========= ENV =========
 load_dotenv(dotenv_path=Path(__file__).resolve().parent / ".env", override=True)
 
-ULTRA_INSTANCE_ID = os.getenv("ULTRA_INSTANCE_ID")
-ULTRAMSG_TOKEN   = os.getenv("ULTRAMSG_TOKEN")
-MY_WA_NUMBER     = os.getenv("MY_WA_NUMBER")  # número da modelo (sem +)
-ALERT_EMAIL      = os.getenv("ALERT_EMAIL", "mlee251@icloud.com")
+API_URL          = os.getenv("API_URL", "https://api.ultramsg.com")
+ULTRA_INSTANCE_ID = os.getenv("ULTRA_INSTANCE_ID") or os.getenv("INSTANCE_ID")
+ULTRAMSG_TOKEN    = os.getenv("ULTRAMSG_TOKEN") or os.getenv("ULTRA_TOKEN")
+MY_WA_NUMBER      = (os.getenv("MY_WA_NUMBER") or "").lstrip("+")  # número da modelo (mesmo da instância)
 
-from ai_provider import generate_reply_with_fallback as generate_reply
+# Email/AI (mantidos para health)
+SMTP_USER  = os.getenv("SMTP_USER")
+SMTP_PASS  = os.getenv("SMTP_PASS")
+AI_PROVIDER = os.getenv("AI_PROVIDER", "openrouter")
+AI_MODEL    = os.getenv("AI_MODEL") or os.getenv("AI_MODEL_POOL", "")
 
-# Configuração de logs
-logging.basicConfig(level=logging.INFO)
+# ========= IA =========
+# usa a função com fallback que você já ajustou no ai_provider.py
+try:
+    from ai_provider import generate_reply  # assinatura: generate_reply(user_text, profile=None)
+except Exception as e:
+    print("[AI] aviso: falha import generate_reply:", e)
+    def generate_reply(txt: str, profile: Optional[Dict]=None) -> str:
+        return "Me diz o bairro e o horário que te atende, amor, e a forma de pagamento (pix/cartão/dinheiro) que confirmo pra você. 💕"
+
+# ========= LOGGING / APP =========
+logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
 log = logging.getLogger("app")
-
 app = Flask(__name__)
 
-# ==== ULTRAMSG ====
-def ultra_send(to_number: str, message: str):
-    url = f"https://api.ultramsg.com/{ULTRA_INSTANCE_ID}/messages/chat"
+# ========= HELPERS =========
+def normalize_jid(s: Optional[str]) -> str:
+    """'5562...@c.us' -> '5562...'; remove '+' e espaços."""
+    if not s:
+        return ""
+    return s.split("@")[0].replace(" ", "").lstrip("+")
+
+def ultramsg_send_text(to_number_e164: str, text: str) -> bool:
+    """Envia texto via UltraMsg (form-data + token em params)."""
+    if not (ULTRA_INSTANCE_ID and ULTRAMSG_TOKEN):
+        log.error("[ULTRA] credenciais ausentes")
+        return False
+    url = f"{API_URL}/{ULTRA_INSTANCE_ID}/messages/chat"
     params = {"token": ULTRAMSG_TOKEN}
-    payload = {"to": to_number, "body": message}
-
-    log.info("[ULTRA] URL: %s", url)
-    resp = requests.post(url, params=params, json=payload)
-    log.info("[ULTRA] resp: %s %s", resp.status_code, resp.text)
-    return resp.status_code == 200
-
-# ==== FLUXO ====
-def process_message(chat_id: str, from_number: str, text: str):
-    """
-    Processa uma msg recebida:
-    - ignora se foi a própria modelo (MY_WA_NUMBER)
-    - chama IA para gerar resposta
-    - envia pelo UltraMsg
-    """
-    if from_number == MY_WA_NUMBER:
-        log.info("[FLOW] Ignorando msg da própria modelo (%s)", from_number)
-        return
-
-    # IA (sem delay humano durante os testes)
-    # delay = random.randint(40, 120)
-    # log.info("[FLOW] aguardando %ss antes de chamar a IA…", delay)
-    # time.sleep(delay)
-
-    log.info("[FLOW] chamando IA…")
-    reply = generate_reply(text)
-
-    if not reply:
-        log.warning("[AI] não retornou resposta")
-        return
-
-    # envia resposta
-    ok = ultra_send(from_number, reply)
-    if ok:
-        log.info("[FLOW] resposta enviada para %s", from_number)
-    else:
-        log.error("[FLOW] falha ao enviar resposta para %s", from_number)
-
-# ==== WEBHOOK ====
-@app.route("/ultra-webhook", methods=["POST"])
-def ultra_webhook():
-    data = request.json
-    log.info("[INBOUND] %s", data)
-
-    if not data:
-        return jsonify({"status": "no data"}), 400
-
+    data = {"to": to_number_e164, "body": text}
     try:
-        chat_id = data.get("id", "")
-        from_number = data.get("from", "").replace("+", "")
-        text = data.get("body", "")
-
-        if text and from_number:
-            log.info("[INBOUND] prov:%s <- cli:%s | '%s' (type=%s)",
-                     ULTRA_INSTANCE_ID, from_number, text, data.get("type"))
-            process_message(chat_id, from_number, text)
-
+        log.info("[ULTRA] POST %s?token=*** data=%s", url, {**data, "body": (text[:80] + "…" if len(text) > 80 else text)})
+        r = requests.post(url, params=params, data=data, timeout=20)
+        try:
+            j = r.json()
+        except Exception:
+            j = {"raw": r.text}
+        log.info("[ULTRA] resp %s %s", r.status_code, j)
+        # Considera sucesso se não retornar 'error' e status 200
+        if r.ok and not j.get("error"):
+            return True
+        return False
     except Exception as e:
-        log.exception("Erro processando webhook: %s", e)
+        log.error("[ULTRA] erro envio: %s", e)
+        return False
 
-    return jsonify({"status": "ok"})
+def extract_messages(payload: Any) -> List[Dict[str, Any]]:
+    """
+    Normaliza o payload do UltraMsg:
+    - pode vir como dict com 'data'
+    - ou dict direto
+    - ou lista de eventos
+    Retorna lista de mensagens normalizadas com campos: from, to, body, type, fromMe
+    """
+    out: List[Dict[str, Any]] = []
 
-# ==== HEALTH ====
-@app.route("/health", methods=["GET"])
+    def _coerce_one(ev: Dict[str, Any]):
+        msg = ev.get("data") or ev  # alguns eventos vêm envelopados
+        body = msg.get("body") or (msg.get("text") or {}).get("body") or ""
+        out.append({
+            "from": msg.get("from") or msg.get("sender") or msg.get("author") or "",
+            "to":   msg.get("to")   or msg.get("chatId") or msg.get("receiver") or "",
+            "type": (msg.get("type") or "").lower(),
+            "body": body,
+            "fromMe": bool(msg.get("fromMe") or msg.get("self") or False),
+            "raw": msg,
+        })
+
+    if isinstance(payload, list):
+        for ev in payload:
+            if isinstance(ev, dict):
+                _coerce_one(ev)
+    elif isinstance(payload, dict):
+        _coerce_one(payload)
+    else:
+        log.warning("[PARSE] payload inesperado: %r", type(payload))
+
+    return out
+
+# ========= ROTAS =========
+@app.get("/health")
 def health():
     return jsonify({
         "ultra_instance": ULTRA_INSTANCE_ID,
-        "ai_provider": os.getenv("AI_PROVIDER"),
-        "ai_model": os.getenv("AI_MODEL"),
-        "smtp_ready": bool(os.getenv("SMTP_USER")),
-        "smtp_missing": [k for k in ["SMTP_USER","SMTP_PASS"] if not os.getenv(k)]
+        "ai_provider": AI_PROVIDER,
+        "ai_model": AI_MODEL,
+        "smtp_ready": bool(SMTP_USER and SMTP_PASS),
+        "smtp_missing": [k for k,v in {"SMTP_USER":SMTP_USER,"SMTP_PASS":SMTP_PASS}.items() if not v],
     })
 
-# ==== MAIN ====
+@app.post("/ultra-webhook")
+def ultra_webhook():
+    payload = request.get_json(silent=True) or request.form.to_dict() or {}
+    msgs = extract_messages(payload)
+
+    for m in msgs:
+        wa_from = normalize_jid(m["from"])
+        wa_to   = normalize_jid(m["to"])
+        mtype   = m["type"]
+        body    = (m["body"] or "").strip()
+        from_me = m["fromMe"]
+
+        # cliente = quem mandou (quando inbound)
+        client_number = wa_from
+        provider_number = wa_to
+
+        log.info("[INBOUND] prov:%s <- cli:%s | %r (type=%s, fromMe=%s)", provider_number, client_number, body, mtype, from_me)
+
+        # Ignora mensagem enviada pela própria modelo (manual)
+        if from_me or (MY_WA_NUMBER and wa_from == MY_WA_NUMBER):
+            log.info("[FLOW] ignorando porque é fromMe ou do nosso número (%s).", wa_from)
+            continue
+
+        # Apenas texto por enquanto
+        if mtype != "chat":
+            log.info("[FLOW] tipo não suportado agora: %s", mtype)
+            continue
+
+        if not body:
+            log.info("[FLOW] corpo vazio; ignorando.")
+            continue
+
+        # Gera resposta pela IA (sem delay, para testes)
+        try:
+            reply = generate_reply(body)
+        except Exception as e:
+            log.error("[AI] erro: %s", e)
+            reply = "Amor, me diz o bairro e o horário que prefere, e a forma de pagamento (pix/cartão/dinheiro), que eu confirmo certinho pra você."
+
+        # Envia
+        ok = ultramsg_send_text(client_number, reply[:4096])
+        if not ok:
+            log.error("[FLOW] falha ao enviar resposta para %s", client_number)
+
+    return jsonify({"status":"ok"}), 200
+
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 8000))
-    log.info(f"Servidor iniciado na porta {port}")
+    port = int(os.getenv("PORT", "8000"))
+    log.info("Servindo na porta %s", port)
     app.run(host="0.0.0.0", port=port)

@@ -1,87 +1,147 @@
 # ai_intent.py
-import os, json, re, logging, requests
-from pathlib import Path
-from dotenv import load_dotenv
+# Detector simples de "fechamento" + extração de local/horário/pagamento.
+# Regras baseadas em padrões comuns (PT-BR). Não usa IA aqui — é rápido e barato.
 
-log = logging.getLogger("ai_intent")
+import re
+from datetime import datetime, timedelta
+from typing import Dict, Optional
 
-# carrega .env ao lado do arquivo
-load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
+HOUR_PATTERNS = [
+    r"\b(\d{1,2})\s?h\b",                 # "20h", "8 h"
+    r"\bàs?\s*(\d{1,2})(?::(\d{2}))?\b",  # "às 20", "as 20:30"
+    r"\bpor volta (?:de|das)\s*(\d{1,2})\b",
+]
+DATE_PATTERNS = [
+    r"\b(\d{1,2})/(\d{1,2})(?:/(\d{2,4}))?\b",  # "21/08", "21/08/2025"
+    r"\bamanhã\b",
+    r"\bhoje\b",
+]
 
-BASE_URL = "https://openrouter.ai/api/v1"
-OR_KEY   = os.getenv("OPENROUTER_API_KEY", "")
-INTENT_MODEL = os.getenv("INTENT_MODEL", "meta-llama/llama-3.1-8b-instruct:free")
-
-HEADERS = {
-    "Authorization": f"Bearer {OR_KEY}" if OR_KEY else "",
-    "Content-Type": "application/json",
-    "HTTP-Referer": "https://localhost",
-    "X-Title": "whatsapp-autoresponder",
+PLACE_KEYWORDS = {
+    "meu_local": ["meu local", "no meu local", "minha casa", "no villa rosa", "villa rosa"],
+    "motel": ["motel"],
+    "casa_cliente": ["seu ap", "seu apê", "sua casa", "no seu ap", "no seu ape", "no seu apto", "no seu apartamento"],
 }
 
-SYSTEM = (
-    "Você extrai intenção de agendamento. Responda SOMENTE um JSON válido, "
-    "sem texto extra, no formato exato:\n"
-    "{\"has_booking\": true|false, "
-    "\"local\": \"meu_local|motel|cliente|null\", "
-    "\"hora\": \"texto ou null\", "
-    "\"pagamento\": \"pix|dinheiro|cartao|null\"}"
-)
+PAYMENT_KEYWORDS = {
+    "pix": ["pix", "chave pix"],
+    "dinheiro": ["dinheiro", "em cash", "em espécie", "especie"],
+    "cartao": ["cartão", "cartao", "débito", "debito", "crédito", "credito", "maquininha"],
+}
 
-def _fallback_regex(t: str) -> dict:
-    t = t.lower()
+CLOSE_VERBS = [
+    "fechar", "marcar", "combinar", "agendar", "tá combinado", "esta combinado",
+    "tá fechado", "está fechado", "fechado", "vamos fechar", "vamos marcar",
+]
 
-    # local
-    local = None
-    if "motel" in t:
-        local = "motel"
-    elif "meu local" in t or "villa rosa" in t or "no seu local" in t:
-        local = "meu_local"
-    elif "meu ap" in t or "meu apê" in t or "meu ape" in t or "no meu ap" in t or "no meu ape" in t or "no meu apê" in t:
-        local = "cliente"
+NEGATIVE_CANCEL = [
+    "cancel", "desmarca", "desmarcar", "não quero", "nao quero", "deixa pra lá", "deixa pra la"
+]
 
-    # hora/data (captura algo para “houve menção”)
-    hora = None
-    m = re.search(r"\b(\d{1,2})h\b|\b(\d{1,2}[:h]\d{2})\b|\b(hoje|amanh[ãa]|agora|mais\s+tarde|à\s+noite|de\s+manhã|de\s+tarde)\b", t)
-    if m:
-        hora = next((g for g in m.groups() if g), None)
 
-    # pagamento
-    pagamento = None
-    if "pix" in t: pagamento = "pix"
-    elif "dinheiro" in t: pagamento = "dinheiro"
-    elif "cartão" in t or "cartao" in t: pagamento = "cartao"
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", s.lower()).strip()
 
-    has = bool(local and hora and pagamento)
-    return {"has_booking": has, "local": local, "hora": hora, "pagamento": pagamento}
 
-def detect_booking(user_text: str) -> dict:
-    """Extrai intenção/slots via LLM; cai em regex se falhar."""
-    if OR_KEY:
-        try:
-            body = {
-                "model": INTENT_MODEL,
-                "messages": [
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": user_text.strip()},
-                ],
-                "temperature": 0.1,
-                "max_tokens": 120,
-            }
-            r = requests.post(f"{BASE_URL}/chat/completions", headers=HEADERS, json=body, timeout=20)
-            r.raise_for_status()
-            txt = r.json()["choices"][0]["message"]["content"].strip()
-            data = json.loads(txt)
-            # normaliza campos ausentes
-            for k in ("local","hora","pagamento"):
-                if k not in data: data[k] = None
-            ret = {
-                "has_booking": bool(data.get("has_booking")),
-                "local": data.get("local") or None,
-                "hora": data.get("hora") or None,
-                "pagamento": data.get("pagamento") or None,
-            }
-            return ret
-        except Exception as e:
-            log.warning("[INTENT] Falha no LLM (%s) – usando regex fallback.", e)
-    return _fallback_regex(user_text or "")
+def _find_place(txt: str) -> Optional[str]:
+    t = _norm(txt)
+    for key, words in PLACE_KEYWORDS.items():
+        for w in words:
+            if w in t:
+                return key
+    return None
+
+
+def _find_payment(txt: str) -> Optional[str]:
+    t = _norm(txt)
+    for key, words in PAYMENT_KEYWORDS.items():
+        for w in words:
+            if w in t:
+                return key
+    return None
+
+
+def _find_time(txt: str) -> Optional[str]:
+    t = _norm(txt)
+    # horas explícitas
+    for pat in HOUR_PATTERNS:
+        m = re.search(pat, t)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2)) if m.lastindex and m.group(m.lastindex) else 0
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                return f"{hh:02d}:{mm:02d}"
+    return None
+
+
+def _find_date(txt: str) -> Optional[str]:
+    t = _norm(txt)
+    # hoje/amanhã
+    if "hoje" in t:
+        return datetime.now().date().isoformat()
+    if "amanhã" in t or "amanha" in t:
+        return (datetime.now() + timedelta(days=1)).date().isoformat()
+
+    # dd/mm(/aaaa)
+    for pat in DATE_PATTERNS:
+        m = re.search(pat, t)
+        if m and m.lastindex and m.lastindex >= 2:
+            dd = int(m.group(1))
+            mm = int(m.group(2))
+            yyyy = int(m.group(3)) if (m.lastindex >= 3 and m.group(3)) else datetime.now().year
+            try:
+                d = datetime(yyyy, mm, dd).date()
+                return d.isoformat()
+            except ValueError:
+                pass
+    return None
+
+
+def _mentions_close(txt: str) -> bool:
+    t = _norm(txt)
+    if any(k in t for k in NEGATIVE_CANCEL):
+        return False
+    return any(k in t for k in CLOSE_VERBS)
+
+
+def detect_booking_intent(message: str) -> Dict:
+    """
+    Retorna:
+    {
+      'closed': bool,              # se tem os 3 pilares (lugar+quando+pagamento) OU usuário disse "fechado" etc.
+      'place': 'meu_local'|'motel'|'casa_cliente'|None,
+      'pay': 'pix'|'dinheiro'|'cartao'|None,
+      'date': 'YYYY-MM-DD'|None,
+      'time': 'HH:MM'|None,
+      'reason': 'explain string'
+    }
+    """
+    msg = message or ""
+    place = _find_place(msg)
+    pay   = _find_payment(msg)
+    tm    = _find_time(msg)
+    dt    = _find_date(msg)
+    said_close = _mentions_close(msg)
+
+    have_when = bool(tm or dt)
+    closed = (place is not None) and (pay is not None) and have_when
+    if not closed and said_close and ((place and (tm or dt)) or (pay and (tm or dt)) or (place and pay)):
+        # reforça "fechado" mesmo faltando uma peça
+        closed = True
+
+    reason = []
+    if closed: reason.append("all set (place/pay/when) or user confirmed close")
+    if place: reason.append(f"place={place}")
+    if pay:   reason.append(f"pay={pay}")
+    if dt:    reason.append(f"date={dt}")
+    if tm:    reason.append(f"time={tm}")
+    if said_close: reason.append("said_close=True")
+
+    return {
+        "closed": closed,
+        "place": place,
+        "pay": pay,
+        "date": dt,
+        "time": tm,
+        "reason": "; ".join(reason) or "no strong signal",
+    }

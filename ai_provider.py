@@ -1,85 +1,83 @@
 # ai_provider.py
-import os, time, logging, random, re
-from typing import Optional, Dict, List
-import requests
-
-from persona import build_system_prompt, FEW_SHOTS
+import os, re, logging, requests
+from pathlib import Path
+from dotenv import load_dotenv
 
 log = logging.getLogger("ai")
 
-MODEL_POOL = [
-    "mistralai/mistral-7b-instruct",
-    "qwen/qwen2.5-7b-instruct",
-    "google/gemma-2-9b-it",
-]
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
-DETAIL_HINT = re.compile(r"\b(detalhe|detalhes|explica|explicar|como funciona|me conta mais)\b", re.I)
+PROVIDER = os.getenv("AI_PROVIDER", "openrouter")
+BASE_URL = "https://openrouter.ai/api/v1"
+OR_KEY   = os.getenv("OPENROUTER_API_KEY", "")
+REPLY_MODEL = os.getenv("REPLY_MODEL", os.getenv("AI_MODEL", "google/gemma-2-9b-it"))
 
-def tidy(msg: str) -> str:
-    m = (msg or "").strip()
-    if len(m) > 700:  # permite mais do que antes, mas segura exageros
-        m = m[:700].rsplit(".", 1)[0] + "."
-    while "\n\n\n" in m:
-        m = m.replace("\n\n\n", "\n\n")
-    return m
+HEADERS = {
+    "Authorization": f"Bearer {OR_KEY}" if OR_KEY else "",
+    "Content-Type": "application/json",
+    "HTTP-Referer": "https://localhost",
+    "X-Title": "whatsapp-autoresponder",
+}
 
-def _call_openrouter(model: str, system_prompt: str, user_text: str) -> str:
-    api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OPENROUTER_API_KEY ausente")
+SYSTEM_RULES = (
+    "Fale em PT-BR informal, doce e segura; poucas gírias, sem formalidade excessiva. "
+    "No máx. 1 emoji por mensagem, e pode responder sem emoji. "
+    "NUNCA invente horário, local, preço, link ou pagamento — pergunte quando necessário. "
+    "Nunca ofereça desconto. Recuse menor de idade ou algo ilegal. "
+    "Se enviarem áudio/foto/vídeo, diga com educação que só consegue ler texto. "
+    "Responda entre 2 e 8 frases (pode ser 1–2 quando apropriado)."
+)
 
-    messages: List[Dict[str, str]] = [{"role": "system", "content": system_prompt}]
-    messages += FEW_SHOTS
-    messages.append({"role": "user", "content": user_text})
+def _build_messages(user_text: str, system_persona: str, history=None):
+    sys = f"{system_persona}\n\n{SYSTEM_RULES}"
+    msgs = [{"role":"system","content":sys}]
+    if history:
+        msgs.extend(history)  # deve estar no formato [{"role":"user"/"assistant","content":...}, ...]
+    msgs.append({"role":"user","content":user_text})
+    return msgs
 
-    wants_details = bool(DETAIL_HINT.search(user_text or ""))
-    max_tokens = 360 if wants_details else 220
-
-    payload = {
+def _call_openrouter(model: str, messages, temperature=0.6, max_tokens=320) -> str:
+    body = {
         "model": model,
         "messages": messages,
-        "temperature": 0.45,
-        "top_p": 0.9,
-        "frequency_penalty": 0.2,
+        "temperature": temperature,
         "max_tokens": max_tokens,
     }
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "HTTP-Referer": "https://seu-dominio-ou-projeto",
-        "X-Title": "whatsapp-autoresponder",
-    }
-
     log.info("[OPENROUTER] model=%s", model)
-    r = requests.post(OPENROUTER_URL, json=payload, headers=headers, timeout=40)
-    if r.status_code != 200:
-        raise requests.HTTPError(f"status={r.status_code} body={r.text}")
+    r = requests.post(f"{BASE_URL}/chat/completions", headers=HEADERS, json=body, timeout=30)
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"]["content"]
 
-    data = r.json()
-    choice = data.get("choices", [{}])[0]
-    content = choice.get("message", {}).get("content") or ""
-    return tidy(content)
+def _postprocess(txt: str) -> str:
+    # remove emojis exóticos e limita repetição
+    txt = re.sub(r"[\U00010000-\U0010ffff]", "", txt)
+    txt = re.sub(r"\n{3,}", "\n\n", txt).strip()
+    return txt
 
-def generate_reply(user_text: str, profile: Optional[Dict] = None) -> str:
-    system_prompt = build_system_prompt(profile)
+def generate_reply(user_text: str, system_persona: str, history=None) -> str:
+    """Gera resposta com modelo principal; se falhar, tenta fallback leve."""
+    if PROVIDER != "openrouter" or not OR_KEY:
+        log.error("[AI] provider não configurado: %s", PROVIDER)
+        return "Oi, amor. Me fala se prefere meu local (Villa Rosa), motel ou seu apê — e horário 🙂"
 
-    low = (user_text or "").lower()
-    if any(k in low for k in ["menor", "menores", "underage", "14", "15", "16", "17"]):
-        return "Não atendo menores de idade nem nada fora da lei. Se quiser, seguimos apenas dentro das regras."
-
+    messages = _build_messages(user_text, system_persona, history)
+    pool = [
+        REPLY_MODEL,                               # principal do .env
+        "qwen/qwen2.5-7b-instruct",               # fallback 1
+        "mistralai/mistral-7b-instruct",          # fallback 2
+    ]
     last_err = None
-    for model in MODEL_POOL:
+    for m in pool:
         try:
-            log.info("[AI] usando modelo: %s", model)
-            reply = _call_openrouter(model, system_prompt, user_text)
-            if reply.strip():
-                return reply
+            raw = _call_openrouter(m, messages)
+            return _postprocess(raw)
+        except requests.HTTPError as e:
+            last_err = e
+            log.warning("[AI] HTTPError model=%s code=%s body=%s",
+                        m, getattr(e.response, "status_code", "?"),
+                        getattr(e.response, "text", "")[:400])
         except Exception as e:
             last_err = e
-            log.warning("[AI] erro com %s: %s", model, getattr(e, "args", e))
-            time.sleep(0.8 + random.random() * 0.7)
-
-    if last_err:
-        log.error("[AI] falha geral: %s", last_err)
-    return "Entendi, amor. Me diz o local e o horário que prefira, e a forma de pagamento (pix, cartão ou dinheiro), que eu já confirmo tudo pra você."
+            log.warning("[AI] Falha com %s: %s", m, e)
+    log.error("[AI] todas as tentativas falharam: %s", last_err)
+    return "Quer marcar? Me diz o local (meu local/motel/apê), a hora e pagamento (pix/cartão/dinheiro)."

@@ -1,67 +1,90 @@
 # ai_provider.py
-import os, time, random, logging, requests
+import os, re, json, time, logging, requests
+from pathlib import Path
+from dotenv import load_dotenv
 
 log = logging.getLogger("ai")
+load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-API_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
+OR_KEY = os.getenv("OPENROUTER_API_KEY", "").strip()
 
+# Pool de modelos (ordem = preferência); pode ajustar no .env via AI_MODEL/REPLY_MODEL se quiser
 MODEL_POOL = [
-    "nousresearch/nous-hermes-2-mixtral-8x7b-dpo",
-    "qwen/qwen2.5-32b-instruct",
-    "mistralai/mixtral-8x22b-instruct",
-    "austism/airoboros-l2-70b",
+    os.getenv("REPLY_MODEL") or os.getenv("AI_MODEL") or "google/gemma-2-9b-it",
+    "qwen/qwen2.5-7b-instruct",
+    "mistralai/mistral-7b-instruct",
 ]
 
-HEADERS = {
-    "Authorization": f"Bearer {API_KEY}" if API_KEY else "",
-    "Content-Type": "application/json",
-    "HTTP-Referer": "https://openrouter.ai",
-    "X-Title": "WA Autoresponder",
-}
+SYSTEM_RULES = (
+    "Fale em PT-BR coloquial, natural e sedutor; poucos emojis (0–1). "
+    "Jamais diga que é IA/assistente/modelo de linguagem: você é a pessoa. "
+    "Nunca invente horário/preço/link; não ofereça desconto. "
+    "Se pedirem áudio/foto/vídeo, diga educadamente que só consegue ler texto. "
+    "Responda entre 2 e 8 frases (curta quando apropriado)."
+)
 
-TEMPERATURE = 0.8
-MAX_TOKENS  = 280
-TIMEOUT_S   = 35
+def _headers():
+    return {
+        "Authorization": f"Bearer {OR_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "https://localhost",
+        "X-Title": "whatsapp-autoresponder",
+    }
 
+def _merge_messages(system_persona: str, history=None, user_text: str = ""):
+    sys = (system_persona or "").strip() + "\n\n" + SYSTEM_RULES
+    msgs = [{"role": "system", "content": sys}]
+    if history:
+        # history deve ser no formato [{"role":"user"/"assistant","content":...}, ...]
+        msgs.extend(history[-12:])
+    if user_text:
+        msgs.append({"role": "user", "content": user_text})
+    return msgs
 
-def _one_call(model: str, messages: list[dict]) -> str:
-    if not API_KEY:
-        raise RuntimeError("OPENROUTER_API_KEY ausente no ambiente")
-
-    payload = {
+def _call(model: str, messages):
+    body = {
         "model": model,
         "messages": messages,
-        "temperature": TEMPERATURE,
-        "max_tokens": MAX_TOKENS,
+        "temperature": 0.65,
+        "max_tokens": 320,
     }
-    log.info("[OPENROUTER] model=%s", model)
-    r = requests.post(OPENROUTER_URL, headers=HEADERS, json=payload, timeout=TIMEOUT_S)
-    if r.status_code != 200:
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:400]}")
+    r = requests.post(OPENROUTER_URL, headers=_headers(), data=json.dumps(body), timeout=45)
+    r.raise_for_status()
     data = r.json()
-    try:
-        return data["choices"][0]["message"]["content"].strip()
-    except Exception:
-        raise RuntimeError(f"Resposta inesperada: {data}")
+    return data["choices"][0]["message"]["content"].strip()
 
+def _post(txt: str) -> str:
+    # remove emojis exóticos e espaços excessivos
+    txt = re.sub(r"[\U00010000-\U0010ffff]", "", txt)
+    txt = re.sub(r"\s{3,}", "  ", txt).strip()
+    return txt
 
-def generate_reply(history, system_prompt=None, model_hint=None) -> str:
+def generate_reply(user_text: str, system_persona: str, history=None) -> str:
     """
-    Função principal chamada pelo app.py.
-    - history: lista de mensagens (role+content)
-    - system_prompt/model_hint: mantidos por compatibilidade
-    Retorna a resposta do modelo, ou fallback textual.
+    Gera resposta textual usando OpenRouter, com fallback de modelos.
+    Parâmetros:
+      - user_text: texto do cliente
+      - system_persona: instruções + persona (string)
+      - history: lista de mensagens [{"role":"user"/"assistant","content":...}]
+    Retorna:
+      - string de resposta (pode ser curta), ou fallback padrão se falhar
     """
+    if not OR_KEY:
+        log.error("[AI] OPENROUTER_API_KEY ausente")
+        return "Amor, me diz onde prefere (meu local no Villa Rosa, motel ou teu apê) e o horário — e como quer pagar (PIX, dinheiro ou cartão)."
+
+    messages = _merge_messages(system_persona, history=history, user_text=user_text)
+
     last_err = None
-    for idx, model in enumerate(MODEL_POOL, start=1):
+    for m in MODEL_POOL:
         try:
-            return _one_call(model, history)
+            log.info("[AI] tentando modelo: %s", m)
+            raw = _call(m, messages)
+            return _post(raw)
         except Exception as e:
             last_err = e
-            log.warning("[AI] falha com %s (%d/%d): %s",
-                        model, idx, len(MODEL_POOL), str(e)[:200])
-            time.sleep(1.0 + random.random()*1.0)
+            log.warning("[AI] falha com %s: %s", m, str(e)[:400])
+            time.sleep(0.8)
     log.error("[AI] todos os modelos falharam: %s", last_err)
-    return ("Amor, me diz só: prefere no meu local (Villa Rosa, R$300), "
-            "em motel ou no seu apê (R$500)? E qual horário e pagamento (PIX/cartão/dinheiro)?")
+    return "Tá bom, amor. Me fala o local (meu local/motel/teu apê), o horário e a forma de pagamento (PIX, dinheiro ou cartão)."

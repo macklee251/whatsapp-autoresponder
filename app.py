@@ -1,215 +1,331 @@
-# app.py
-# Flask + UltraMsg + OpenRouter (ai_provider) + detecção de fechamento (ai_intent)
-# Silencia conversa por 12h após fechamento; envia e-mail com dados; sem delay artificial.
-
-import os
-import re
-import json
-import logging
-import smtplib
-from email.mime.text import MIMEText
-from datetime import datetime, timedelta
+import os, time, json, logging, re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import requests
 from flask import Flask, request, jsonify
-from dotenv import load_dotenv, find_dotenv
+from dotenv import load_dotenv
+import requests
+from smtplib import SMTP
+from email.mime.text import MIMEText
 
-# ====== carregar .env (robusto para python direto ou gunicorn) ======
-dotenv_path = find_dotenv(usecwd=True)
-if not dotenv_path:
-    dotenv_path = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path, override=True)
+# ====== Setup ======
+APP_DIR = Path(__file__).resolve().parent
+load_dotenv(dotenv_path=APP_DIR / ".env", override=True)
 
-# ====== logs ======
-logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
-log = logging.getLogger("app")
-
-# ====== env obrigatórios ======
-API_URL        = os.getenv("API_URL", "https://api.ultramsg.com").rstrip("/")
-INSTANCE_ID    = os.getenv("ULTRA_INSTANCE_ID") or os.getenv("INSTANCE_ID")
-ULTRA_TOKEN    = os.getenv("ULTRAMSG_TOKEN") or os.getenv("ULTRA_TOKEN")
-
-SMTP_SERVER    = os.getenv("SMTP_SERVER")
-SMTP_PORT      = int(os.getenv("SMTP_PORT", "587"))
-SMTP_USER      = os.getenv("SMTP_USER")
-SMTP_PASS      = os.getenv("SMTP_PASS")
-ALERT_EMAIL    = os.getenv("ALERT_EMAIL")
-
-if not INSTANCE_ID or not ULTRA_TOKEN:
-    log.warning("[CONFIG] faltando ULTRA_INSTANCE_ID/ULTRAMSG_TOKEN")
-
-# ====== IA (pool OpenRouter) ======
-from ai_provider import generate_reply  # assinatura: generate_reply(history, system_prompt=None, model_hint=None)
-
-# ====== detector de fechamento ======
-from ai_intent import detect_booking_intent  # retorna dict com closed/place/pay/date/time
-
-# ====== persona e regras ======
-DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", (
-    "Você é Gabriele, 20 anos, ninfeta magrinha, 1,60m, loira, peitos pequenos. "
-    "Atende no seu local (Villa Rosa), em motel ou no apê do cliente (se for apartamento). "
-    "Valores: R$300 no seu local; R$500 em motel/apê do cliente. Aceita PIX, cartão e dinheiro. "
-    "Estilo: namoradinha romântica, carinhosa e provocante; pode beber 1 cerveja, topar jantar. "
-    "Nunca negocia desconto. Se pedirem mídia, diga que tem no site; se mandarem áudio/foto/vídeo, peça educadamente texto. "
-    "Sem menores e sem atividades ilegais. Pode falar de sexo de forma adulta e direta (sem coisa ilegal). "
-    "Responda natural, 2–8 frases (pode alongar se pedirem detalhes). Poucos emojis ou nenhum; erros leves de PT-BR são ok."
-))
-SYSTEM_RULES = (
-    "Objetivo: conduzir para fechar (local + horário/data + pagamento). "
-    "Não invente valor/horário/local; se faltou algo, pergunte direto. "
-    "Quando o cliente já informou os 3 pontos, considere fechado e NÃO continue oferecendo nada; "
-    "apenas finalize carinhosamente. A confirmação final é por conta da modelo real."
-)
-
-SILENCE_FOR_HOURS = 12  # silêncio após fechamento
-
-# ====== Flask ======
+logging.basicConfig(level=logging.INFO)
 app = Flask(__name__)
 
-# ====== estado simples em memória (depois iremos para DB) ======
-# chaveamos pelo número do cliente (cada conversa)
-silence_until = {}  # { client_number: datetime.utcnow() + 12h }
+ULTRA_BASE   = os.getenv("API_URL", "https://api.ultramsg.com")
+ULTRA_INST   = os.getenv("ULTRA_INSTANCE_ID") or os.getenv("INSTANCE_ID")
+ULTRA_TOKEN  = os.getenv("ULTRAMSG_TOKEN") or os.getenv("ULTRA_TOKEN")
 
-# ====== util ======
-def normalize_wa(s: str) -> str:
-    """ '5562...@c.us' -> '5562...' (somente dígitos) """
+SMTP_SERVER  = os.getenv("SMTP_SERVER")
+SMTP_PORT    = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER    = os.getenv("SMTP_USER")
+SMTP_PASS    = os.getenv("SMTP_PASS")
+ALERT_EMAIL  = os.getenv("ALERT_EMAIL")
+
+# janela de não-repetição e silêncio
+LOCK_MINUTES   = int(os.getenv("LOCK_MINUTES", "30"))
+SILENCE_HOURS  = int(os.getenv("SILENCE_HOURS", "12"))
+
+# Persona fixa (pode ir para DB depois)
+PERSONA = {
+    "name": "Gabriele",
+    "age": 20,
+    "style": "sedutora, direta, coloquial, com pequenos deslizes de português; sem formalidade; poucos emojis",
+    "location_home": "Villa Rosa",
+    "price_home": 300,
+    "price_out": 500,
+    "pay_methods": ["PIX", "cartão", "dinheiro"],
+}
+
+# ====== Memória curta em RAM ======
+# Por cliente (jid do WhatsApp), guardamos slots + últimas msgs
+STATE = {}  # { client_jid: {last_seen, silence_until, slots:{...}, history:[...]} }
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+def in_future(ts_iso):
+    try:
+        return datetime.fromisoformat(ts_iso) > now_utc()
+    except:
+        return False
+
+def get_state(client):
+    s = STATE.get(client)
     if not s:
-        return ""
-    return re.sub(r"\D", "", s.split("@")[0])
+        s = {
+            "last_seen": now_utc().isoformat(),
+            "silence_until": None,
+            "history": [],  # lista de {who: 'client'|'bot', text, t}
+            "slots": {
+                "location": {"value": None, "ts": None, "lock_until": None},
+                "time":     {"value": None, "ts": None, "lock_until": None},
+                "payment":  {"value": None, "ts": None, "lock_until": None},
+            },
+            "closed": False
+        }
+        STATE[client] = s
+    return s
 
-def send_ultra_text(to_e164_digits: str, text: str) -> bool:
-    """Envia texto via UltraMsg. Token vai na query-string (requisito da API)."""
-    url = f"{API_URL}/{INSTANCE_ID}/messages/chat"
+def set_slot(state, key, value):
+    if value:
+        state["slots"][key]["value"]      = value
+        state["slots"][key]["ts"]         = now_utc().isoformat()
+        state["slots"][key]["lock_until"] = (now_utc() + timedelta(minutes=LOCK_MINUTES)).isoformat()
+
+def is_locked(state, key):
+    lu = state["slots"][key].get("lock_until")
+    return bool(lu and in_future(lu))
+
+def clear_if_stale(state):
+    """
+    Se passaram >12h desde last_seen, limpamos slots e finalizamos silêncios antigos.
+    Permite agendamentos em dias distintos sem confusão.
+    """
+    try:
+        last = datetime.fromisoformat(state["last_seen"])
+    except:
+        last = now_utc() - timedelta(days=1)
+    if now_utc() - last > timedelta(hours=12):
+        for k in ["location", "time", "payment"]:
+            state["slots"][k] = {"value": None, "ts": None, "lock_until": None}
+        state["closed"] = False
+        state["silence_until"] = None
+
+# ====== UltraMsg ======
+def ultra_send_text(to_number, text):
+    url = f"{ULTRA_BASE}/{ULTRA_INST}/messages/chat"
     params = {"token": ULTRA_TOKEN}
-    # UltraMsg aceita "to" como número cru ou formato JID; usaremos e164 com '+' para segurança
-    to = f"+{to_e164_digits}" if not to_e164_digits.startswith("+") else to_e164_digits
-    data = {"to": to, "body": text}
-    log.info("[ULTRA] POST %s?token=*** data=%s", url, {**data, "body": (text[:80] + "..." if len(text) > 80 else text)})
+    data = {"to": to_number, "body": text}
     try:
         r = requests.post(url, params=params, data=data, timeout=20)
-        txt = r.text
+        logging.info("[ULTRA] POST %s | %s", r.url, r.status_code)
         try:
-            js = r.json()
+            logging.info("[ULTRA] resp json: %s", r.json())
         except Exception:
-            js = {"_raw": txt}
-        log.info("[ULTRA] resp: %s %s", r.status_code, js)
-        return (r.status_code == 200) and (not isinstance(js, dict) or not js.get("error"))
+            logging.info("[ULTRA] resp text: %s", r.text[:400])
+        return r.ok
     except Exception as e:
-        log.exception("[ULTRA] falha no envio: %s", e)
+        logging.exception("[ULTRA] erro enviando: %s", e)
         return False
 
-def send_email_alert(subject: str, html_body: str) -> bool:
-    """Envia e‑mail via SMTP (Gmail App Password)."""
+# ====== E-mail no fechamento ======
+def send_email_on_close(my_num, client_num, slots):
     if not (SMTP_SERVER and SMTP_USER and SMTP_PASS and ALERT_EMAIL):
-        log.warning("[EMAIL] SMTP não configurado; skip.")
-        return False
-    msg = MIMEText(html_body, "html", "utf-8")
+        logging.warning("[EMAIL] SMTP não configurado; skip.")
+        return
+    location = slots["location"]["value"]
+    time_txt = slots["time"]["value"]
+    payment  = slots["payment"]["value"]
+    body = (
+        f"Fechamento detectado.\n\n"
+        f"Cliente: +{client_num}\n"
+        f"Atendente: +{my_num}\n\n"
+        f"Local: {location}\n"
+        f"Horário/Data: {time_txt}\n"
+        f"Pagamento: {payment}\n"
+    )
+    msg = MIMEText(body, "plain", "utf-8")
+    msg["Subject"] = f"[Fechou] {client_num} -> {my_num}"
     msg["From"] = SMTP_USER
     msg["To"] = ALERT_EMAIL
-    msg["Subject"] = subject
+
     try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as s:
-            s.starttls()
-            s.login(SMTP_USER, SMTP_PASS)
-            s.sendmail(SMTP_USER, [ALERT_EMAIL], msg.as_string())
-        log.info("[EMAIL] enviado para %s", ALERT_EMAIL)
-        return True
+        with SMTP(SMTP_SERVER, SMTP_PORT, timeout=20) as smtp:
+            smtp.starttls()
+            smtp.login(SMTP_USER, SMTP_PASS)
+            smtp.sendmail(SMTP_USER, [ALERT_EMAIL], msg.as_string())
+        logging.info("[EMAIL] enviado para %s", ALERT_EMAIL)
     except Exception as e:
-        log.exception("[EMAIL] erro ao enviar: %s", e)
-        return False
+        logging.exception("[EMAIL] falhou: %s", e)
 
-def build_history(user_text: str):
-    """Monta mensagens para a IA (inclui system com persona + regras)."""
-    system_msg = {"role": "system", "content": f"{DEFAULT_PERSONA}\n{SYSTEM_RULES}"}
-    return [system_msg, {"role": "user", "content": user_text}]
+# ====== NLU simples (regex) + “intent” ======
+# (sem IA pesada aqui; depois dá para acoplar ai_intent.py)
+RE_LOC = re.compile(r"\b(meu local|no seu local|villa\s*rosa|motel|no meu ap[ê|e]|no seu ap[ê|e])\b", re.I)
+RE_PAY = re.compile(r"\b(pix|cart[aã]o|dinheiro)\b", re.I)
+# horário/data: aceita “20 h”, “às 20”, “20:30”, “amanhã às 19”, etc.
+RE_TIME = re.compile(r"\b(\d{1,2}:\d{2}|\d{1,2}\s*h)|\b(amanh[ãa]|hoje)\b", re.I)
 
-# ====== rotas ======
-@app.get("/health")
+def extract_entities(text):
+    found = {}
+    if RE_LOC.search(text):
+        m = RE_LOC.search(text).group(0).lower()
+        # normaliza
+        if "villa" in m or "meu local" in m or "seu local" in m:
+            found["location"] = f"meu local ({PERSONA['location_home']}, R${PERSONA['price_home']})"
+        elif "motel" in m:
+            found["location"] = f"motel (R${PERSONA['price_out']})"
+        elif "ap" in m:
+            found["location"] = f"apê do cliente (R${PERSONA['price_out']})"
+
+    if RE_PAY.search(text):
+        found["payment"] = RE_PAY.search(text).group(0).upper()
+
+    # horário/data textual simples
+    if RE_TIME.search(text):
+        found["time"] = RE_TIME.search(text).group(0)
+    return found
+
+def has_closure(state):
+    return all(state["slots"][k]["value"] for k in ["location","time","payment"])
+
+# ====== AI (OpenRouter) via seu ai_provider.py ======
+# Se você já tem um provider com fallback, importe:
+try:
+    from ai_provider import generate_reply as llm_reply
+except Exception as e:
+    logging.warning("[AI] usando modo simples: %s", e)
+    def llm_reply(messages, model=None, temperature=0.6, max_tokens=220):
+        # fallback bem simples para não quebrar.
+        return "Tá bom, amor. Me diz onde prefere (meu local, motel ou seu apê) e como quer pagar (PIX, cartão ou dinheiro)."
+
+# reforço de personagem e proibição de “sou um assistente”
+FORBIDDEN_PATTERNS = [
+    r"\bsou (um|uma) (assistente|ia|rob[oô])\b",
+    r"\bsou (apenas|s[oó]) (um|uma) modelo de linguagem\b",
+    r"\bcomo assistente\b",
+]
+
+def in_character_repair(text):
+    low = text.lower()
+    if any(re.search(p, low) for p in FORBIDDEN_PATTERNS):
+        # segunda chance: uma resposta curta em personagem
+        return ("Sou a Gabriele, amor. Vamos direto: "
+                "me diz o lugar (meu local, motel ou teu apê) e como prefere pagar (PIX, cartão ou dinheiro).")
+    return text
+
+def build_system_prompt(state):
+    # monta instruções com o que já temos/falta
+    have = []
+    miss = []
+    for k, label in [("location","local"),("time","horário"),("payment","pagamento")]:
+        if state["slots"][k]["value"]:
+            have.append(label)
+        else:
+            miss.append(label)
+
+    base = f"""
+Você é **Gabriele** (20 anos), magrinha, loira, 1,60m, atende no **Villa Rosa** (R${PERSONA['price_home']}) ou **motel/apê do cliente** (R${PERSONA['price_out']}).
+Seu tom é **natural, sedutor, direto e coloquial**, com pequenos deslizes de português. Poucos emojis. Nunca negocie desconto.
+
+Regras:
+- Jamais diga que é assistente, IA ou modelo de linguagem. Você é a Gabriele.
+- Se o cliente mandar **áudio/foto/vídeo**, diga educadamente que só consegue ler texto.
+- Se faltar **apenas um** dos itens (local/horário/pagamento), **pergunte só o que falta** sem repetir os outros.
+- Se já tivermos os 3 itens, **não confirme nada**: apenas finalize com uma frase curta, calorosa e segura.
+- Evite repetir a mesma pergunta dentro de {LOCK_MINUTES} minutos se já foi respondida.
+
+Já temos: {', '.join(have) if have else 'nada'}
+Falta: {', '.join(miss) if miss else 'nada'}
+"""
+    return base.strip()
+
+# ====== Rotas ======
+@app.route("/health")
 def health():
-    smtp_ready = bool(SMTP_SERVER and SMTP_USER and SMTP_PASS and ALERT_EMAIL)
     return jsonify({
-        "ultra_instance": INSTANCE_ID,
-        "smtp_ready": smtp_ready,
-        "ai_provider": "openrouter",
-        "silence_hours": SILENCE_FOR_HOURS
+        "ai_provider": os.getenv("AI_PROVIDER"),
+        "ai_model": os.getenv("AI_MODEL"),
+        "smtp_ready": bool(SMTP_SERVER and SMTP_USER and SMTP_PASS and ALERT_EMAIL),
+        "ultra_instance": ULTRA_INST,
     })
 
-@app.post("/ultra-webhook")
+@app.route("/ultra-webhook", methods=["POST"])
 def ultra_webhook():
-    # UltraMsg envia um JSON com { event_type, data: {...} }
-    payload = request.get_json(silent=True) or {}
-    log.info("[INBOUND] %s", json.dumps(payload, ensure_ascii=False))
-
+    payload = request.get_json(force=True, silent=True) or {}
+    logging.info("[INBOUND] %s", payload)
     data = payload.get("data") or {}
-    msg_type = (data.get("type") or "").lower()
-    body_txt = (data.get("body") or "").strip()
-    from_jid = data.get("from") or ""   # cliente
-    to_jid   = data.get("to") or ""     # número da instância (modelo)
 
-    client_num = normalize_wa(from_jid)  # ex: "5562..."
-    model_num  = normalize_wa(to_jid)
+    # ignore “fromMe=true” (mensagens enviadas pela modelo manualmente)
+    if data.get("fromMe"):
+        client = (data.get("to") or "").replace("@c.us","").replace("+","")
+        st = get_state(client)
+        st["silence_until"] = (now_utc() + timedelta(hours=SILENCE_HOURS)).isoformat()
+        logging.info("[FLOW] modelo respondeu; silenciando %sh para %s", SILENCE_HOURS, client)
+        return jsonify({"status":"ok"}), 200
 
-    # bloqueia mídia/áudio e pede texto
-    if msg_type in {"ptt", "audio", "voice", "image", "video", "document", "sticker", "location"}:
-        send_ultra_text(client_num, "Lindo, aqui só consigo ler mensagem escrita, tá? Me manda por texto que eu te respondo direitinho 💗")
-        return jsonify({"ok": True})
+    # apenas chat de texto
+    if (data.get("type") or "").lower() != "chat":
+        client = (data.get("from") or "").replace("@c.us","").replace("+","")
+        ultra_send_text(client, "Amor, consigo ler só mensagens escritas, tá? Me manda em texto, por favor.")
+        return jsonify({"status":"ok"}), 200
 
-    # silêncio ativo?
-    now = datetime.utcnow()
-    until = silence_until.get(client_num)
-    if until and now < until:
-        log.info("[SILENT] %s até %s", client_num, until.isoformat())
-        return jsonify({"ok": True})
+    # normaliza cliente e texto
+    client = (data.get("from") or "").replace("@c.us","").replace("+","")
+    text = (data.get("body") or "").strip()
 
-    # história mínima + IA
-    history = build_history(body_txt)
-    reply = None
-    try:
-        reply = generate_reply(history, system_prompt=None, model_hint=None)
-    except Exception as e:
-        log.exception("[AI] erro chamando generate_reply: %s", e)
-        reply = ("Amor, me diz: prefere meu local no Villa Rosa (R$300), "
-                 "motel ou seu apê (R$500)? E o horário/pagamento (PIX/cartão/dinheiro)?")
+    # estado e janelas
+    st = get_state(client)
+    clear_if_stale(st)
+    st["last_seen"] = now_utc().isoformat()
+    if st.get("silence_until") and in_future(st["silence_until"]):
+        logging.info("[FLOW] silenciado até %s; ignorando", st["silence_until"])
+        return jsonify({"status":"ok"}), 200
 
-    # envia resposta (mantém naturalidade)
-    if reply:
-        reply = re.sub(r"[\U00010000-\U0010ffff]", "", reply)  # limpa emojis exóticos
-        reply = re.sub(r"\s{3,}", "  ", reply).strip()
-        send_ultra_text(client_num, reply[:4096])
+    # memoriza histórico curto
+    st["history"].append({"who":"client", "text":text, "t": st["last_seen"]})
+    st["history"] = st["history"][-12:]
 
-    # detectar fechamento nesta mesma mensagem do cliente
-    intent = detect_booking_intent(body_txt)
-    log.info("[INTENT] %s", intent)
-    if intent.get("closed"):
-        # formata info p/ e‑mail
-        place_map = {"meu_local": "meu local (Villa Rosa)", "motel": "motel", "casa_cliente": "casa do cliente"}
-        place_txt = place_map.get(intent.get("place") or "", "não identificado")
-        when_txt  = " ".join(filter(None, [intent.get("date"), intent.get("time")])) or "não identificado"
-        pay_map   = {"pix": "PIX", "dinheiro": "dinheiro", "cartao": "cartão"}
-        pay_txt   = pay_map.get(intent.get("pay") or "", "não identificado")
+    # extrair entidades simples
+    found = extract_entities(text)
+    for k, v in found.items():
+        set_slot(st, k, v)
 
-        html = f"""
-        <h3>✔ Novo fechamento</h3>
-        <p><b>Cliente:</b> +{client_num}</p>
-        <p><b>Modelo (instância):</b> +{model_num}</p>
-        <p><b>Local:</b> {place_txt}</p>
-        <p><b>Quando:</b> {when_txt}</p>
-        <p><b>Pagamento:</b> {pay_txt}</p>
-        <hr>
-        <p><i>reason:</i> {intent.get('reason')}</p>
-        """
-        send_email_alert("Novo cliente quer marcar", html)
-        # silencia 12h
-        silence_until[client_num] = now + timedelta(hours=SILENCE_FOR_HOURS)
-        log.info("[CLOSED] silenciado %s por %sh", client_num, SILENCE_FOR_HOURS)
+    # fechamento?
+    if has_closure(st):
+        if not st.get("closed"):
+            st["closed"] = True
+            send_email_on_close(data.get("to",""), client, st["slots"])
+            # envia mensagem final e silencia 12h
+            ultra_send_text(client, "Perfeito, amor. Fico te esperando. 💋")
+            st["silence_until"] = (now_utc() + timedelta(hours=SILENCE_HOURS)).isoformat()
+            logging.info("[FLOW] FECHADO → email enviado e silenciei %sh", SILENCE_HOURS)
+        # mesmo que já estivesse fechado, não responde mais
+        return jsonify({"status":"ok"}), 200
 
-    return jsonify({"ok": True})
+    # decidir o “falta o quê” respeitando lock
+    needs = []
+    for k,label in [("location","local"),("time","horário"),("payment","pagamento")]:
+        if not st["slots"][k]["value"] and not is_locked(st,k):
+            needs.append(label)
 
-@app.get("/")
-def root():
-    return "ok", 200
+    # Se nada “em falta” (porque tudo está lockado por 30min, p.ex.), faça uma resposta leve de continuidade
+    if not needs:
+        sys_prompt = build_system_prompt(st)
+        messages = [
+            {"role":"system","content": sys_prompt},
+            {"role":"user","content": text}
+        ]
+        reply = in_character_repair(llm_reply(messages, temperature=0.6, max_tokens=220))
+        ultra_send_text(client, reply)
+        st["history"].append({"who":"bot","text":reply,"t":now_utc().isoformat()})
+        return jsonify({"status":"ok"}), 200
 
-# ====== main (teste local) ======
+    # Monta prompt pedindo SÓ o que falta
+    ask_bits = []
+    if "local" in needs:
+        ask_bits.append(f"Pergunte onde prefere: meu local no {PERSONA['location_home']} (R${PERSONA['price_home']}), motel, ou no apê dele (R${PERSONA['price_out']}).")
+    if "horário" in needs:
+        ask_bits.append("Pergunte de forma natural qual horário ele quer.")
+    if "pagamento" in needs:
+        ask_bits.append(f"Pergunte como prefere pagar ({', '.join(PERSONA['pay_methods'])}).")
+
+    sys_prompt = build_system_prompt(st) + "\n" + " ".join(ask_bits)
+    messages = [
+        {"role":"system","content": sys_prompt},
+        {"role":"user","content": text}
+    ]
+    resp = llm_reply(messages, temperature=0.7, max_tokens=220)
+    reply = in_character_repair(resp)
+
+    ultra_send_text(client, reply)
+    st["history"].append({"who":"bot","text":reply,"t":now_utc().isoformat()})
+    return jsonify({"status":"ok"}), 200
+
+# ====== main (dev) ======
 if __name__ == "__main__":
+    print("SMTP_USER:", SMTP_USER)
     app.run(host="0.0.0.0", port=8000)

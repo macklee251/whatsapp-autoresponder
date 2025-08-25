@@ -1,89 +1,50 @@
 whatsapp-autoresponder/
-├─ app/                          # aplicação (Flask/FastAPI + regras)
-│  ├─ app.py                     # webhook principal (UltraMsg/GreenAPI) + roteamento
-│  ├─ config.py                  # carrega .env e validações
-│  ├─ ai_provider.py             # Cliente IA (chat): OpenRouter/vLLM com fallback
-│  ├─ ai_intent.py               # IA de intenção (slots: local, data/hora, pagamento)
-│  ├─ persona.py                 # montagem do "profile block" + regras globais (sem desconto, etc.)
-│  ├─ state_manager.py           # memória curta (últimas 12h), cooldown e transições
-│  ├─ services/                  # integrações externas
-│  │  ├─ ultra.py                # UltraMsg (envio texto, mídia, recebimento)
-│  │  ├─ greenapi.py             # (futuro) Green API
-│  │  ├─ mailer.py               # envio de e‑mail (modelo → confirmação de booking)
-│  │  ├─ scheduler.py            # tarefas assíncronas leves (retries, e-mails, limpeza)
-│  │  └─ storage.py              # upload/links de mídia (futuro)
-│  ├─ db/                        # acesso ao Postgres
-│  │  ├─ connection.py           # pool/engine
-│  │  ├─ dao/                    # DAOs focados por agregado
-│  │  │  ├─ providers_dao.py
-│  │  │  ├─ clients_dao.py
-│  │  │  ├─ messages_dao.py
-│  │  │  ├─ signals_dao.py
-│  │  │  └─ bookings_dao.py
-│  │  └─ migrations/             # Alembic (versões do schema)
-│  │     ├─ env.py
-│  │     ├─ script.py.mako
-│  │     └─ versions/
-│  ├─ rules/                     # regras de negócio isoladas
-│  │  ├─ reply_style.py          # tom/estilo, densidade de emojis/erros de PT
-│  │  ├─ booking_logic.py        # “fechou?”, criação de booking, cooldown 12h
-│  │  └─ pricing_logic.py        # cálculo de preço por local + extras
-│  └─ utils/
-│     ├─ timeutils.py            # parsing de datas/horas (PT-BR) e TZ
-│     ├─ text_clean.py           # normalização texto / heurísticas
-│     └─ logging.py              # logger configurado
+├─ app/                                   # aplicação (FastAPI) + lógica
+│  ├─ app.py                              # webhook principal / healthcheck
+│  ├─ config.py                           # carrega .env (chaves, modelos, janelas)
+│  ├─ ai_provider.py                      # cliente OpenRouter (pool + retry + JSON mode)
+│  ├─ ai_intent.py                        # IA de intenção (slots: local/data/pagamento/pedidos)
+│  ├─ ai_responder.py                     # geração de resposta persona (chat)
+│  ├─ schema_intent.py                    # JSON Schema do extractor (validação)
+│  ├─ state_manager.py                    # janela de 4h, consolidação de slots, status
+│  ├─ business_rules.py                   # regras globais (sem desconto, silêncio 12h, etc.)
+│  ├─ router.py                           # resolve conversation_id, carrega contexto
+│  ├─ cost_meter.py                       # métrica de custo por chamada
+│  ├─ rate_limiter.py                     # proteção de TPS/backoff
+│  └─ deps.py                             # injeção de dependências (db, mailer, providers)
 │
-├─ prompts/                      # engenharia de prompts (separado!)
-│  ├─ system_base.yaml           # persona/base genérica (limites + segurança)
-│  ├─ reply_fewshots.jsonl       # exemplos curtos de resposta natural
-│  └─ intent_fewshots.jsonl      # exemplos de extração (local, horário, pagamento)
+├─ services/                              # integrações externas
+│  ├─ ultra.py                            # UltraMsg/GreenAPI: enviar/receber mensagens
+│  ├─ mailer.py                           # envio de email p/ modelo (SMTP/Sendgrid)
+│  ├─ notifier.py                         # orquestra alertas (booking, off-profile)
+│  └─ logging_middleware.py               # logs estruturados de requisição/resposta
 │
-├─ datasets/                     # para TREINAR o modelo (LoRA/RLAIF)
-│  ├─ girls_pt/                  # diálogos “garotas cis” (JSON Lines, 1 obj por linha)
-│  ├─ trans_pt/                  # diálogos “trans”
-│  ├─ mixed_eval/                # amostras de validação
-│  └─ scripts/                   # helpers p/ limpeza, balanceamento, split
+├─ db/                                    # persistência
+│  ├─ models.py                           # ORM (models, clients, conversations, bookings, etc.)
+│  ├─ migrations/                         # migrações (alembic)
+│  └─ repo.py                             # repositórios (queries)
 │
-├─ finetune/                     # treinamento/servidores de modelo
-│  ├─ lora/                      # scripts de LoRA (PEFT) com QLoRA 4/8-bit
-│  │  ├─ train_lora.py
-│  │  ├─ config/                 # configs por base-model
-│  │  │  ├─ qwen2.5-7b.yaml
-│  │  │  └─ mistral-7b.yaml
-│  │  └─ eval_notebooks/
-│  ├─ vllm/                      # servir no Runpod (OpenAI‑compat)
-│  │  ├─ serve_qwen.sh           # sobe vLLM apontando para base + adapter LoRA
-│  │  └─ healthcheck.py
-│  └─ adapters/                  # pasta dos adapters LoRA treinados (.safetensors)
+├─ prompts/                               # prompts e fewshots
+│  ├─ system_base.yaml                    # persona + estilo default
+│  ├─ reply_fewshots.jsonl                # exemplos de resposta da modelo
+│  └─ intent_fewshots.jsonl               # exemplos de extração (local, hora, pagamento)
 │
-├─ infra/                        # IaC + deploy
-│  ├─ docker/                    # Dockerfile(s) do app
-│  ├─ k8s/                       # manifests (futuro)
-│  ├─ runpod/                    # instruções de pod (ports, proxy URL)
-│  └─ gcp/                       # scripts VM (app) + systemd service
+├─ tests/                                 # testes
+│  ├─ test_intent_extractor.py            # gírias, “hj”, “agora”, bairros, parcelas, etc.
+│  ├─ test_state_window.py                # janela de 4h e expiração
+│  ├─ test_special_request_alert.py       # pedidos fora do perfil → email + silêncio
+│  └─ test_silence_rule.py                # silêncio 12h respeitado pelo responder
 │
-├─ sql/                          # schema “fonte da verdade” (Postgres)
-│  ├─ 001_types.sql
-│  ├─ 010_providers.sql
-│  ├─ 020_clients.sql
-│  ├─ 030_messages.sql
-│  ├─ 040_extracted_signals.sql
-│  ├─ 050_bookings.sql
-│  ├─ 060_provider_billing.sql
-│  └─ 099_triggers.sql
+├─ scripts/                               # utilitários
+│  ├─ seed_personas.py                    # carrega personas e perfis de serviços
+│  ├─ import_dialogs_jsonl.py             # importa dataset .jsonl
+│  └─ count_dialogs.py                    # conta "dialogue" em jsonl
 │
-├─ tests/                        # testes unitários
-│  ├─ test_intent.py
-│  ├─ test_reply.py
-│  └─ test_rules.py
+├─ docs/                                  # documentação
+│  ├─ architecture.md                     # visão geral e fluxos
+│  └─ api.md                              # contrato do webhook / callbacks
 │
-├─ scripts/                      # utilitários locais
-│  ├─ seed_demo.py               # cria provider/cliente fake para testes
-│  ├─ export_dialogs.py          # exporta histórico p/ dataset
-│  └─ import_profiles.py         # importa planilha de perfis
-│
-├─ .env.example                  # chaves de exemplo (ver abaixo)
-├─ requirements.txt              # deps do app
-├─ requirements-train.txt        # deps de treino
-├─ README.md
-└─ LICENSE
+├─ .env.example                           # variáveis de exemplo
+├─ requirements.txt                       # deps (fastapi, pydantic, httpx, jsonschema, etc.)
+├─ README.md                              # como rodar local/pod
+└─ docker-compose.yml                     # (opcional) local stack

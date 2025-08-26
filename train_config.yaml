@@ -6,7 +6,6 @@ logging_dir: /workspace/whatsapp-autoresponder/logs
 # Configurações de dados
 dataset_dir: /workspace/whatsapp-autoresponder/data
 dataset: dialogs_style,dialogs_style_with_personality
-dataset_parser: sharegpt
 template: qwen
 cutoff_len: 1024
 train_on_prompt: false
@@ -19,7 +18,7 @@ gradient_accumulation_steps: 4
 learning_rate: 2e-5
 save_strategy: steps
 save_steps: 500
-evaluation_strategy: steps
+eval_strategy: steps  # Substituído de evaluation_strategy
 eval_steps: 500
 logging_steps: 50
 warmup_ratio: 0.03
@@ -28,8 +27,7 @@ fp16: true
 
 # Configurações de LoRA
 finetuning_type: lora
-finetuning_args:
-  lora_rank: 8
-  lora_alpha: 16
-  lora_dropout: 0.05
-  lora_target: all
+lora_rank: 8
+lora_alpha: 16
+lora_dropout: 0.05
+lora_target: all

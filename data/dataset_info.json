@@ -3,14 +3,22 @@
     "formatting": "sharegpt",
     "file_name": "dialogs_style.sharegpt.jsonl",
     "columns": {
-      "messages": "messages"
+      "messages": "messages",
+      "role_tag": "role",
+      "content_tag": "content",
+      "system_tag": "user",
+      "assistant_tag": "assistant"
     }
   },
   "dialogs_style_with_personality": {
     "formatting": "sharegpt",
     "file_name": "dialogs_style_with_personality.sharegpt.jsonl",
     "columns": {
-      "messages": "messages"
+      "messages": "messages",
+      "role_tag": "role",
+      "content_tag": "content",
+      "system_tag": "user",
+      "assistant_tag": "assistant"
     }
   }
 }

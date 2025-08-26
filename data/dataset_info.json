@@ -2,16 +2,21 @@
   "sharegpt": {
     "file_name": "dialogs_style_converted.norm.jsonl",
     "formatting": "sharegpt",
-    "columns": {
-      "messages": "messages"
-    }
+    "columns": { "messages": "messages" }
   },
   "sharegpt_personality": {
     "file_name": "dialogs_style_with_personality_converted.norm.jsonl",
     "formatting": "sharegpt",
-    "columns": {
-      "messages": "messages",
-      "profile": "profile"
-    }
+    "columns": { "messages": "messages", "profile": "profile" }
+  },
+  "dialogs_style": {
+    "file_name": "dialogs_style_converted.norm.jsonl",
+    "formatting": "sharegpt",
+    "columns": { "messages": "messages" }
+  },
+  "dialogs_style_with_personality": {
+    "file_name": "dialogs_style_with_personality_converted.norm.jsonl",
+    "formatting": "sharegpt",
+    "columns": { "messages": "messages", "profile": "profile" }
   }
 }

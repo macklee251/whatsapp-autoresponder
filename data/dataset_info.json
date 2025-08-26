@@ -1,14 +1,14 @@
 {
   "sharegpt": {
-    "file_name": "dialogs_style_converted.sharegpt.jsonl",
-    "format": "sharegpt",
+    "file_name": "dialogs_style_converted.norm.jsonl",
+    "formatting": "sharegpt",
     "columns": {
       "messages": "messages"
     }
   },
-  "sharegpt_with_personality": {
-    "file_name": "dialogs_style_with_personality_converted.sharegpt.jsonl",
-    "format": "sharegpt",
+  "sharegpt_personality": {
+    "file_name": "dialogs_style_with_personality_converted.norm.jsonl",
+    "formatting": "sharegpt",
     "columns": {
       "messages": "messages",
       "profile": "profile"

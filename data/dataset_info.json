@@ -1,14 +1,10 @@
 {
-  "gp_plain": {
-    "file_name": "dialogs_style.sharegpt.jsonl",
-    "columns": {
-      "messages": "messages"
-    }
+  "sharegpt_dialogs_style": {
+    "format": "sharegpt",
+    "path": "/workspace/whatsapp-autoresponder/data/dialogs_style.sharegpt.jsonl"
   },
-  "gp_profile": {
-    "file_name": "dialogs_style_with_personality.sharegpt.jsonl",
-    "columns": {
-      "messages": "messages"
-    }
+  "sharegpt_dialogs_style_with_personality": {
+    "format": "sharegpt",
+    "path": "/workspace/whatsapp-autoresponder/data/dialogs_style_with_personality.sharegpt.jsonl"
   }
 }

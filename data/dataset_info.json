@@ -1,24 +1,16 @@
 {
   "dialogs_style": {
     "formatting": "sharegpt",
-    "file_name": "dialogs_style.sharegpt.jsonl",
+    "file_name": "dialogs_style_converted.sharegpt.jsonl",
     "columns": {
-      "messages": "messages",
-      "role_tag": "role",
-      "content_tag": "content",
-      "system_tag": "user",
-      "assistant_tag": "assistant"
+      "messages": "messages"
     }
   },
   "dialogs_style_with_personality": {
     "formatting": "sharegpt",
-    "file_name": "dialogs_style_with_personality.sharegpt.jsonl",
+    "file_name": "dialogs_style_with_personality_converted.sharegpt.jsonl",
     "columns": {
-      "messages": "messages",
-      "role_tag": "role",
-      "content_tag": "content",
-      "system_tag": "user",
-      "assistant_tag": "assistant"
+      "messages": "messages"
     }
   }
 }

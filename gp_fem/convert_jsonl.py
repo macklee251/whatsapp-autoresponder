@@ -1,72 +1,33 @@
+from pathlib import Path, PurePath
 import json
-from pathlib import Path
 
-def normalize_extras_paid(profile: dict):
-    """Normaliza extras_paid para SEMPRE ser lista de objetos."""
-    ep = profile.get("extras_paid", [])
-    if ep is None:
-        return []
-    if isinstance(ep, dict):
-        return [ep]
-    if isinstance(ep, list):
-        new_list = []
-        for item in ep:
-            if item is None:
-                continue
-            if isinstance(item, dict):
-                new_list.append(item)
-            elif isinstance(item, str):
-                new_list.append({"type": item})
-            else:
-                new_list.append({"type": str(item)})
-        return new_list
-    if isinstance(ep, str):
-        return [{"type": ep}]
-    return [{"type": str(ep)}]
+src = Path("data/dialogs_style_converted.sharegpt.jsonl")
+dst = Path("data/dialogs_style_converted.norm.jsonl")
 
-def convert_jsonl(input_file, output_file):
-    total, fixed = 0, 0
-    with open(input_file, 'r', encoding='utf-8') as infile, open(output_file, 'w', encoding='utf-8') as outfile:
-        for line in infile:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                print(f"❌ Erro ao parsear linha em {input_file}: {line[:100]}...")
-                continue
+ok = 0
+skip = 0
 
-            total += 1
+with src.open("r", encoding="utf-8") as fin, dst.open("w", encoding="utf-8") as fout:
+    for ln, line in enumerate(fin, 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception as e:
+            print(f"!! pulando linha {ln}: JSON inválido -> {e}")
+            skip += 1
+            continue
 
-            # Normalizar perfil se existir
-            if isinstance(data.get("profile"), dict):
-                data["profile"]["extras_paid"] = normalize_extras_paid(data["profile"])
-                fixed += 1
+        # Esperado: {"messages":[{"from":"human"/"assistant","value":"..."}], ...}
+        msgs = obj.get("messages")
+        if not isinstance(msgs, list) or not all(isinstance(m, dict) for m in msgs):
+            print(f"!! pulando linha {ln}: 'messages' ausente/fora do formato")
+            skip += 1
+            continue
 
-            # Normalizar mensagens
-            if "messages" in data:
-                new_messages = []
-                for msg in data["messages"]:
-                    role = msg.get("role")
-                    content = msg.get("content", "")
-                    new_msg = {
-                        "from": "human" if role == "user" else "assistant",
-                        "value": content
-                    }
-                    new_messages.append(new_msg)
-                data["messages"] = new_messages
+        fout.write(json.dumps(obj, ensure_ascii=False) + "\n")
+        ok += 1
 
-            json.dump(data, outfile, ensure_ascii=False)
-            outfile.write("\n")
-
-    print(f"✅ {input_file} → {output_file} | total: {total} | normalizadas: {fixed}")
-
-# Caminhos
-base = Path("/workspaces/whatsapp-autoresponder/data")
-
-convert_jsonl(base / "dialogs_style.sharegpt.jsonl",
-              base / "dialogs_style_converted.sharegpt.jsonl")
-
-convert_jsonl(base / "dialogs_style_with_personality.sharegpt.jsonl",
-              base / "dialogs_style_with_personality_converted.sharegpt.jsonl")
+print(f"✅ normalizado: {ok} linhas | ❌ puladas: {skip}")
+print(f"➡️ saída: {dst}")

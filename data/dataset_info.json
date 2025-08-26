@@ -1,10 +1,10 @@
 {
-  "sharegpt_dialogs_style": {
-    "format": "sharegpt",
-    "path": "/workspace/whatsapp-autoresponder/data/dialogs_style.sharegpt.jsonl"
+  "dialogs_style": {
+    "formatting": "sharegpt",
+    "file_name": "dialogs_style.sharegpt.jsonl"
   },
-  "sharegpt_dialogs_style_with_personality": {
-    "format": "sharegpt",
-    "path": "/workspace/whatsapp-autoresponder/data/dialogs_style_with_personality.sharegpt.jsonl"
+  "dialogs_style_with_personality": {
+    "formatting": "sharegpt",
+    "file_name": "dialogs_style_with_personality.sharegpt.jsonl"
   }
 }

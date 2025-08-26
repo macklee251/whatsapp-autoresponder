@@ -1,0 +1,14 @@
+{
+  "gp_plain": {
+    "file_name": "dialogs_style.sharegpt.jsonl",
+    "columns": {
+      "messages": "messages"
+    }
+  },
+  "gp_profile": {
+    "file_name": "dialogs_style_with_personality.sharegpt.jsonl",
+    "columns": {
+      "messages": "messages"
+    }
+  }
+}

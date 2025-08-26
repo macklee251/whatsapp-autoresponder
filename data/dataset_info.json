@@ -3,14 +3,14 @@
     "formatting": "sharegpt",
     "file_name": "dialogs_style.sharegpt.jsonl",
     "columns": {
-      "conversations": "conversations"
+      "messages": "messages"
     }
   },
   "dialogs_style_with_personality": {
     "formatting": "sharegpt",
     "file_name": "dialogs_style_with_personality.sharegpt.jsonl",
     "columns": {
-      "conversations": "conversations"
+      "messages": "messages"
     }
   }
 }

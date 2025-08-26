@@ -1,16 +1,17 @@
 {
-  "dialogs_style": {
-    "formatting": "sharegpt",
+  "sharegpt": {
     "file_name": "dialogs_style_converted.sharegpt.jsonl",
+    "format": "sharegpt",
     "columns": {
       "messages": "messages"
     }
   },
-  "dialogs_style_with_personality": {
-    "formatting": "sharegpt",
+  "sharegpt_with_personality": {
     "file_name": "dialogs_style_with_personality_converted.sharegpt.jsonl",
+    "format": "sharegpt",
     "columns": {
-      "messages": "messages"
+      "messages": "messages",
+      "profile": "profile"
     }
   }
 }

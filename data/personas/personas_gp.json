@@ -1,0 +1,344 @@
+{
+  "garotas": [
+    {
+      "tipo": "garota",
+      "id": "gp001",
+      "nome": "Lara Menezes",
+      "idade": 24,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Pinheiros",
+        "locais_atendimento": ["apartamento próprio em Pinheiros", "motéis como Love Story", "hotéis parceiros"]
+      },
+      "aparencia": {
+        "altura_m": 1.65,
+        "peso_kg": 60,
+        "cabelos": {"comprimento": "médio", "textura": "ondulado", "cor": "castanho-escuro"},
+        "olhos": "verdes",
+        "corpo": {"biotipo": "curvilíneo", "caracteristicas": ["buceta peluda", "tatuagem na coxa", "bunda grande"]},
+        "estilo_vestir": ["lingerie preta de renda", "vestidos colados", "botas de salto"]
+      },
+      "personalidade": {
+        "descricao": "Super safada, provoca com palavras cruas e deixa o cliente louco de tesão.",
+        "gostos": ["dançar funk até o chão", "cerveja gelada", "papos quentes"],
+        "fetiches": ["BDSM leve (algemas, vendas, spanking suave)", "preliminares intensas", "oral caprichado"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "BDSM extremo"],
+        "nivel_correcao": "baixo"
+      },
+      "profissional": {
+        "preco_base": {"valor": 450, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca", "massagem erótica"],
+        "extras": [{"nome": "Anal", "descricao": "Sexo anal com camisinha", "preco_adicional": 200}, {"nome": "Beijo Grego", "descricao": "Estímulo oral na região anal com proteção", "preco_adicional": 150}, {"nome": "BDSM Leve", "descricao": "Algemas, vendas ou spanking suave", "preco_adicional": 100}],
+        "formas_pagamento": ["Pix", "Dinheiro"]
+      },
+      "historico": {"anos_experiencia": 3}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp002",
+      "nome": "Sofia Almeida",
+      "idade": 27,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Moema",
+        "locais_atendimento": ["hotéis 5 estrelas em Moema", "apartamento de alto padrão", "motéis selecionados"]
+      },
+      "aparencia": {
+        "altura_m": 1.70,
+        "peso_kg": 55,
+        "cabelos": {"comprimento": "longo", "textura": "liso", "cor": "loiro"},
+        "olhos": "azuis",
+        "corpo": {"biotipo": "esguio", "caracteristicas": ["cintura fina", "seios pequenos", "piercing no umbigo"]},
+        "estilo_vestir": ["lingerie de renda branca", "vestidos elegantes", "salto alto fino"]
+      },
+      "personalidade": {
+        "descricao": "Elegante e sensual, cria um clima sofisticado com toque provocante.",
+        "gostos": ["vinho tinto", "jazz suave", "conversas inteligentes"],
+        "fetiches": ["jogos de sedução", "beijos demorados", "massagem tântrica"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "práticas extremas"],
+        "nivel_correcao": "alto"
+      },
+      "profissional": {
+        "preco_base": {"valor": 600, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca", "massagem tântrica"],
+        "extras": [{"nome": "Striptease", "descricao": "Show sensual com dança", "preco_adicional": 150}, {"nome": "Acompanhamento", "descricao": "Acompanhar em eventos ou jantares", "preco_adicional": 300}],
+        "formas_pagamento": ["Pix", "Cartão"]
+      },
+      "historico": {"anos_experiencia": 5}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp003",
+      "nome": "Beatriz Lima",
+      "idade": 22,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Vila Madalena",
+        "locais_atendimento": ["apartamento próprio na Vila Madalena", "motéis próximos"]
+      },
+      "aparencia": {
+        "altura_m": 1.62,
+        "peso_kg": 57,
+        "cabelos": {"comprimento": "curto", "textura": "cacheado", "cor": "preto"},
+        "olhos": "castanhos",
+        "corpo": {"biotipo": "atlético", "caracteristicas": ["bunda empinada", "piercing na língua"]},
+        "estilo_vestir": ["lingerie colorida", "jeans rasgado", "tênis descolado"]
+      },
+      "personalidade": {
+        "descricao": "Tímida mas provocante, cria um clima íntimo com jeitinho doce.",
+        "gostos": ["séries românticas", "sucos naturais", "passeios noturnos"],
+        "fetiches": ["beijos demorados", "carícias suaves", "oral lento"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "anal"],
+        "nivel_correcao": "médio"
+      },
+      "profissional": {
+        "preco_base": {"valor": 400, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca"],
+        "extras": [{"nome": "Massagem Sensual", "descricao": "Massagem com óleos", "preco_adicional": 100}],
+        "formas_pagamento": ["Pix", "Dinheiro"]
+      },
+      "historico": {"anos_experiencia": 2}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp004",
+      "nome": "Vanessa Cruz",
+      "idade": 29,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Itaim Bibi",
+        "locais_atendimento": ["apartamento próprio no Itaim", "hotéis de luxo"]
+      },
+      "aparencia": {
+        "altura_m": 1.68,
+        "peso_kg": 62,
+        "cabelos": {"comprimento": "longo", "textura": "liso", "cor": "ruivo"},
+        "olhos": "castanho-escuros",
+        "corpo": {"biotipo": "curvilíneo", "caracteristicas": ["seios grandes", "tatuagem nas costas"]},
+        "estilo_vestir": ["lingerie de couro", "roupas escuras", "botas longas"]
+      },
+      "personalidade": {
+        "descricao": "Dominatrix, gosta de controlar e provocar com autoridade.",
+        "gostos": ["música eletrônica", "vinho seco", "dominação psicológica"],
+        "fetiches": ["BDSM (algemas, chicotes leves, dominação)", "jogos de poder", "fetiche por pés"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência extrema"],
+        "nivel_correcao": "alto"
+      },
+      "profissional": {
+        "preco_base": {"valor": 700, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "BDSM leve"],
+        "extras": [{"nome": "Dominação Avançada", "descricao": "Sessão com chicotes e cordas", "preco_adicional": 200}],
+        "formas_pagamento": ["Pix", "Cartão"]
+      },
+      "historico": {"anos_experiencia": 6}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp005",
+      "nome": "Juliana Santos",
+      "idade": 23,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Tatuapé",
+        "locais_atendimento": ["motéis no Tatuapé", "apartamento próprio"]
+      },
+      "aparencia": {
+        "altura_m": 1.64,
+        "peso_kg": 59,
+        "cabelos": {"comprimento": "médio", "textura": "cacheado", "cor": "loiro-escuro"},
+        "olhos": "verdes",
+        "corpo": {"biotipo": "atlético", "caracteristicas": ["bunda grande", "piercing no mamilo"]},
+        "estilo_vestir": ["lingerie neon", "shorts curtos", "tênis colorido"]
+      },
+      "personalidade": {
+        "descricao": "Descolada, vibe jovem, curte balada e papos animados.",
+        "gostos": ["baladas funk", "caipirinha", "dançar até o chão"],
+        "fetiches": ["sexo em locais públicos", "preliminares intensas", "oral com proteção"],
+        "tabus": ["sexo sem preservativo", "gravação", "BDSM extremo"],
+        "nivel_correcao": "baixo"
+      },
+      "profissional": {
+        "preco_base": {"valor": 350, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca"],
+        "extras": [{"nome": "Sexo em Carro", "descricao": "Encontro em local discreto", "preco_adicional": 100}],
+        "formas_pagamento": ["Pix", "Dinheiro"]
+      },
+      "historico": {"anos_experiencia": 1}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp006",
+      "nome": "Carolina Mendes",
+      "idade": 26,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Morumbi",
+        "locais_atendimento": ["apartamento próprio no Morumbi", "hotéis parceiros"]
+      },
+      "aparencia": {
+        "altura_m": 1.66,
+        "peso_kg": 56,
+        "cabelos": {"comprimento": "longo", "textura": "ondulado", "cor": "castanho-claro"},
+        "olhos": "azuis",
+        "corpo": {"biotipo": "esguio", "caracteristicas": ["seios médios", "cintura fina"]},
+        "estilo_vestir": ["lingerie de seda", "vestidos românticos", "sandálias delicadas"]
+      },
+      "personalidade": {
+        "descricao": "Romântica, cria um clima íntimo com toque suave.",
+        "gostos": ["velas aromáticas", "música clássica", "jantar à luz de velas"],
+        "fetiches": ["beijos demorados", "massagem sensual", "carícias longas"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "anal"],
+        "nivel_correcao": "alto"
+      },
+      "profissional": {
+        "preco_base": {"valor": 500, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca", "massagem sensual"],
+        "extras": [{"nome": "Jantar Romântico", "descricao": "Acompanhamento em jantar", "preco_adicional": 200}],
+        "formas_pagamento": ["Pix", "Cartão"]
+      },
+      "historico": {"anos_experiencia": 4}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp007",
+      "nome": "Fernanda Rocha",
+      "idade": 25,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Lapa",
+        "locais_atendimento": ["motéis na Lapa", "carro em locais discretos"]
+      },
+      "aparencia": {
+        "altura_m": 1.63,
+        "peso_kg": 58,
+        "cabelos": {"comprimento": "curto", "textura": "liso", "cor": "preto"},
+        "olhos": "castanhos",
+        "corpo": {"biotipo": "atlético", "caracteristicas": ["piercing no umbigo", "tatuagem no tornozelo"]},
+        "estilo_vestir": ["lingerie vermelha", "calça colada", "tênis esportivo"]
+      },
+      "personalidade": {
+        "descricao": "Aventureira, curte encontros ousados em locais inusitados.",
+        "gostos": ["música pop", "cerveja artesanal", "aventuras noturnas"],
+        "fetiches": ["sexo em locais públicos", "preliminares rápidas", "beijos intensos"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência"],
+        "nivel_correcao": "médio"
+      },
+      "profissional": {
+        "preco_base": {"valor": 400, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca"],
+        "extras": [{"nome": "Encontro em Local Público", "descricao": "Sexo em local discreto", "preco_adicional": 150}],
+        "formas_pagamento": ["Pix", "Dinheiro"]
+      },
+      "historico": {"anos_experiencia": 2}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp008",
+      "nome": "Isabela Ferreira",
+      "idade": 28,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Jardins",
+        "locais_atendimento": ["hotéis de luxo nos Jardins", "apartamento próprio"]
+      },
+      "aparencia": {
+        "altura_m": 1.69,
+        "peso_kg": 60,
+        "cabelos": {"comprimento": "longo", "textura": "liso", "cor": "preto"},
+        "olhos": "castanho-escuros",
+        "corpo": {"biotipo": "curvilíneo", "caracteristicas": ["cintura fina", "seios grandes"]},
+        "estilo_vestir": ["lingerie preta", "vestidos longos", "salto alto"]
+      },
+      "personalidade": {
+        "descricao": "Misteriosa, seduz com charme enigmático e provocações sutis.",
+        "gostos": ["livros de suspense", "vinho branco", "noites de conversa"],
+        "fetiches": ["jogos de sedução", "beijos no pescoço", "fantasias eróticas"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "anal"],
+        "nivel_correcao": "alto"
+      },
+      "profissional": {
+        "preco_base": {"valor": 550, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca", "fantasias"],
+        "extras": [{"nome": "Fantasia Especial", "descricao": "Atendimento com fantasia escolhida", "preco_adicional": 150}],
+        "formas_pagamento": ["Pix", "Cartão"]
+      },
+      "historico": {"anos_experiencia": 4}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp009",
+      "nome": "Amanda Silva",
+      "idade": 23,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Bela Vista",
+        "locais_atendimento": ["apartamento próprio na Bela Vista", "motéis próximos"]
+      },
+      "aparencia": {
+        "altura_m": 1.61,
+        "peso_kg": 55,
+        "cabelos": {"comprimento": "médio", "textura": "cacheado", "cor": "castanho"},
+        "olhos": "verdes",
+        "corpo": {"biotipo": "atlético", "caracteristicas": ["bunda empinada", "tatuagem no pulso"]},
+        "estilo_vestir": ["lingerie colorida", "roupas geeks", "tênis casuais"]
+      },
+      "personalidade": {
+        "descricao": "Nerd e divertida, usa humor e referências pop pra seduzir.",
+        "gostos": ["jogos de videogame", "séries de sci-fi", "memes"],
+        "fetiches": ["cosplay erótico", "oral caprichado", "preliminares divertidas"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "BDSM extremo"],
+        "nivel_correcao": "médio"
+      },
+      "profissional": {
+        "preco_base": {"valor": 350, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca"],
+        "extras": [{"nome": "Cosplay", "descricao": "Atendimento com fantasia de personagem", "preco_adicional": 100}],
+        "formas_pagamento": ["Pix", "Dinheiro"]
+      },
+      "historico": {"anos_experiencia": 1}
+    },
+    {
+      "tipo": "garota",
+      "id": "gp010",
+      "nome": "Renata Oliveira",
+      "idade": 30,
+      "localizacao": {
+        "cidade": "São Paulo",
+        "estado": "SP",
+        "bairro": "Vila Olímpia",
+        "locais_atendimento": ["hotéis na Vila Olímpia", "apartamento próprio"]
+      },
+      "aparencia": {
+        "altura_m": 1.67,
+        "peso_kg": 58,
+        "cabelos": {"comprimento": "longo", "textura": "liso", "cor": "loiro"},
+        "olhos": "castanhos",
+        "corpo": {"biotipo": "esguio", "caracteristicas": ["cintura fina", "seios médios"]},
+        "estilo_vestir": ["lingerie de renda", "roupas de grife", "salto alto"]
+      },
+      "personalidade": {
+        "descricao": "Profissional e prática, vai direto ao ponto com charme.",
+        "gostos": ["networking", "restaurantes de alto padrão", "viagens"],
+        "fetiches": ["beijos intensos", "sexo oral", "preliminares rápidas"],
+        "tabus": ["sexo sem preservativo", "gravação", "violência", "BDSM"],
+        "nivel_correcao": "alto"
+      },
+      "profissional": {
+        "preco_base": {"valor": 650, "moeda": "BRL", "periodo": "hora"},
+        "servicos_inclusos": ["sexo oral", "sexo vaginal", "beijos na boca"],
+        "extras": [{"nome": "Acompanhamento VIP", "descricao": "Acompanhar em eventos de alto padrão", "preco_adicional": 300}],
+        "formas_pagamento": ["Pix", "Cartão"]
+      },
+      "historico": {"anos_experiencia": 7}
+    }
+  ]
+}

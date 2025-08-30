@@ -1,0 +1,295 @@
+# configs/architecture.yaml
+# Arquitetura completa do projeto whatsapp-autoresponder
+
+project:
+  name: whatsapp-autoresponder
+  description: >
+    Bot de WhatsApp para creators/garotas de programa com IA fina-ajustada
+    em conversas reais. Nesta fase: preparo de dados + treino SFT (Qwen2.5-7B-Instruct).
+    Próximas fases: API FastAPI, banco Postgres, fila de jobs, painel e deploy.
+
+repo_layout:
+  # Onde cada peça do projeto fica no repositório
+  src_dir: .
+  folders:
+    - path: app/                # código do backend (FastAPI) e serviços
+      files:
+        - app.py                # ponto de entrada FastAPI
+        - ai_provider.py        # cliente para o modelo (local/HuggingFace/endpoint)
+        - ai_intent.py          # classificação de intent / roteamento
+        - persona.py            # perfis/personas de resposta
+        - deps.py               # injeção de dependências (db, cache, auth)
+        - routers/
+        - services/
+        - schemas/
+        - workers/
+    - path: data/               # dados (raw/interim/processed + dataset_info.json)
+      children:
+        - raw/
+        - interim/
+        - processed/
+    - path: configs/            # configs (este arquivo + train_config.yaml)
+    - path: scripts/            # utilitários de linha de comando
+    - path: logs/
+    - path: output/             # checkpoints, LoRA, exportações
+    - path: infra/              # docker-compose, Dockerfile, migrações
+      children:
+        - migrations/
+    - path: tests/
+
+model:
+  base: /workspace/qwen2.5-7b-instruct        # caminho local (ou "Qwen/Qwen2.5-7B-Instruct")
+  family: qwen2
+  task: causal-lm
+  dtype: float16
+  device: cuda:0
+  tokenizer_extra_special_tokens:
+    - "<seller_profile>"        # opcional: marcadores para injetar contexto de perfil
+    - "</seller_profile>"
+
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  datasets:
+    - name: dialogs_style
+      path: data/processed/dialogs_style_converted.norm.jsonl
+      format: sharegpt           # {"messages":[{"from":"human|assistant","value":...}]}
+    - name: dialogs_style_with_personality
+      path: data/processed/dialogs_style_with_personality_converted.norm.jsonl
+      format: sharegpt
+  validation_split: 0.02         # fração separada para validação
+  quality_rules:
+    min_turns: 2
+    max_turns: 40
+    roles_allowed: ["human","assistant"]
+    drop_if_contains:
+      - "<media_unsupported>"
+      - "<unsafe>"
+  sampling:
+    weights:
+      dialogs_style: 0.7
+      dialogs_style_with_personality: 0.3
+
+training:
+  framework: llamafactory
+  sft:
+    lora: true
+    lora_r: 8
+    lora_alpha: 16
+    lora_dropout: 0.05
+    target_modules: ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]
+  batch:
+    per_device_train: 2
+    grad_accum: 4
+    max_seq_len: 2048
+  schedule:
+    epochs: 3
+    lr: 2.0e-5
+    warmup_ratio: 0.03
+    lr_scheduler: cosine
+  precision:
+    fp16: true
+    gradient_checkpointing: true
+  output:
+    dir: output/checkpoints
+    save_strategy: steps
+    save_steps: 500
+    logging_dir: logs/train
+    logging_steps: 50
+  evaluation:
+    enabled: true
+    eval_steps: 500
+    generation_preview_prompts:
+      - "Cliente: 'aceita pix? dá pra hoje às 21h?'"
+      - "Cliente: 'rola sem preservativo se eu pagar mais?'"
+  export:
+    merge_lora_on_export: false
+    artifact_names:
+      - "adapter.safetensors"
+      - "adapter_config.json"
+      - "training_args.json"
+
+inference:
+  max_new_tokens: 256
+  temperature: 0.7
+  top_p: 0.9
+  repetition_penalty: 1.1
+  system_prompt: >
+    Você é uma assistente que responde como a vendedora, sendo gentil,
+    direta, sempre com preservativo, educada e assertiva sobre limites.
+
+backend:
+  framework: fastapi
+  entrypoint: app/app.py
+  routers:
+    - path: /health
+    - path: /v1/chat/completions
+    - path: /v1/intent
+    - path: /v1/persona
+    - path: /v1/webhook/whatsapp  # webhook do provedor (ex: Meta WhatsApp Cloud API ou Twilio)
+  services:
+    - name: ChatService
+      file: app/services/chat_service.py
+      uses: [ai_provider, db, cache, rate_limit]
+    - name: PersonaService
+      file: app/services/persona_service.py
+    - name: BookingService
+      file: app/services/booking_service.py
+  schemas:
+    - app/schemas/chat.py
+    - app/schemas/persona.py
+    - app/schemas/booking.py
+  deps:
+    - app/deps.py
+
+workers:
+  queue: redis
+  impl: rq # ou "celery"
+  redis_url: ${REDIS_URL}
+  jobs:
+    - name: train_job
+      file: app/workers/train_job.py
+    - name: eval_job
+      file: app/workers/eval_job.py
+    - name: whatsapp_send_job
+      file: app/workers/whatsapp_send_job.py
+
+database:
+  engine: postgres
+  url_env: DATABASE_URL       # ex: postgresql+psycopg2://user:pass@host:5432/db
+  orm: sqlalchemy
+  migrations: alembic
+  pool:
+    size: 5
+    max_overflow: 10
+  schema:
+    tables:
+      users:
+        - id: pk
+        - phone: unique
+        - name: text
+        - role: enum(user, creator, admin)
+        - created_at: timestamp
+      creators:
+        - id: pk
+        - user_id: fk(users.id)
+        - display_name: text
+        - city: text
+        - price_hour: numeric
+        - profile_json: jsonb   # persona/estilo/limites
+        - created_at: timestamp
+      conversations:
+        - id: pk
+        - creator_id: fk(creators.id)
+        - client_phone: text
+        - channel: enum(whatsapp, web, demo)
+        - started_at: timestamp
+        - last_msg_at: timestamp
+      messages:
+        - id: pk
+        - conversation_id: fk(conversations.id)
+        - role: enum(human, assistant, system)
+        - content: text
+        - meta: jsonb
+        - created_at: timestamp
+      bookings:
+        - id: pk
+        - creator_id: fk(creators.id)
+        - conversation_id: fk(conversations.id)
+        - date_time: timestamp
+        - duration_min: int
+        - price_total: numeric
+        - status: enum(pending, confirmed, canceled)
+        - created_at: timestamp
+      payments:
+        - id: pk
+        - booking_id: fk(bookings.id)
+        - method: enum(cash, pix, card)
+        - amount: numeric
+        - status: enum(pending, paid, failed, refunded)
+        - created_at: timestamp
+      analytics_daily:
+        - day: date pk
+        - messages_in: int
+        - messages_out: int
+        - bookings: int
+        - revenue: numeric
+
+cache:
+  redis_url: ${REDIS_URL}
+  keys:
+    conversation_state: "conv:{id}:state"
+    rate_limit: "rl:{phone}"
+
+integrations:
+  whatsapp:
+    provider: meta_cloud_api  # ou twilio
+    webhook_path: /v1/webhook/whatsapp
+    verify_token_env: WHATSAPP_VERIFY_TOKEN
+    app_id_env: WHATSAPP_APP_ID
+    app_secret_env: WHATSAPP_APP_SECRET
+    phone_number_id_env: WHATSAPP_PHONE_NUMBER_ID
+    access_token_env: WHATSAPP_ACCESS_TOKEN
+
+security:
+  auth:
+    strategy: bearer
+    jwt_secret_env: JWT_SECRET
+  cors:
+    allowed_origins:
+      - "https://studio-frontend.example.com"
+      - "http://localhost:5173"
+  pii_guard:
+    redact_phone: true
+    redact_pix_keys: true
+
+monitoring:
+  logs_dir: logs/
+  request_logging: true
+  metrics:
+    enabled: true
+    exporter: prometheus
+  tracing:
+    enabled: false
+
+env:
+  required:
+    - DATABASE_URL
+    - REDIS_URL
+    - JWT_SECRET
+    - WHATSAPP_VERIFY_TOKEN
+    - WHATSAPP_ACCESS_TOKEN
+  optional:
+    - HF_TOKEN
+    - MODEL_ENDPOINT_URL
+
+deployment:
+  container:
+    dockerfile: infra/Dockerfile
+    compose: infra/docker-compose.yml
+    services:
+      - api
+      - worker
+      - db
+      - redis
+  runtime:
+    gpu: true
+    checkpoints_dir: output/checkpoints
+    load_adapter: output/checkpoints/last
+    
+
+
+1.  Validação da IA 1 (Geração de respostas): Script simples pra simular respostas da GP.
+2.  Validação da IA 2 (Análise de intents): Script pra detectar marcação ou pedidos fora do perfil.
+3.  Simulação completa: Combinar as duas IAs em um loop de conversa fictícia, testando escala com múltiplas mensagens.
+4.  Estrutura de pastas: Criar o repo layout do YAML.
+5.  Configurações: Arquivos YAML/JSON pra prompts e perfis.
+6.  Backend básico com FastAPI: API simples pra simular chamadas.
+7.  Integração com banco (Postgres): Armazenar perfis e logs.
+8.  Workers e queues (Redis/RQ): Pra lidar com mensagens simultâneas (escala pra 100+).
+9.  Notificações por e-mail: Integração com SendGrid ou SMTP.
+10.  Integração WhatsApp (webhook): Via Twilio ou Meta API.
+11.  Testes de escala: Simular 100+ mensagens.
+12.  Deploy no Google Cloud: Subir tudo pro GC.
+Vamos começar com o Passo 1: Validação da IA 1 (Geração de respostas).

@@ -1,3 +1,29 @@
-venv/
-.env
+# Python
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+
+# Dados sensíveis
+*.env
+configs/*.json  # Protege config.json com chaves
+data/raw/*
+data/interim/*
+data/processed/*
+logs/*
+output/*
+gcloud/*.json  # Google Cloud service account JSONs
+*.key          # Chaves SSH ou RunPod
+runpod/*       # Configs RunPod
+
+# Outros
+*.log
+*.sqlite
+*.db
+.DS_Store
+*.bak
+*.swp

@@ -1,0 +1,32 @@
+{
+  "provider": "openrouter",
+  "settings": {
+    "api_key": "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",
+    "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+    "default_model_ia1": "openai/gpt-4o",
+    "default_model_ia2": "meta-llama/llama-3-8b-instruct"
+  },
+  "google_cloud": {
+    "project_id": "seu-projeto-gcloud-aqui",
+    "service_account_file": "gcloud/credentials.json",
+    "secret_manager_prefix": "projects/seu-projeto-gcloud-aqui/secrets",
+    "cloud_run_endpoint": "https://seu-app-aqui.run.app"
+  },
+  "runpod": {
+    "api_key": "sua-chave-runpod-aqui",
+    "endpoint": "https://api.runpod.io",
+    "default_instance_type": "A100-40GB"
+  },
+   "email": {
+    "user": "atendimento.jobbot@gmail.com",
+    "pass": "ipiw dgom ldqz ffrh",
+    "server": "smtp.gmail.com",
+    "port": 587
+  },
+  "ultra_msg": {
+    "instance_id": "instance139762",
+    "token": "2top12oxzamtqnqo"
+  }
+}
+
+
